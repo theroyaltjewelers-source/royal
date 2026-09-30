@@ -39,7 +39,7 @@ Client identities and what they bought, project economics, payments and receivab
 
 ## 4. Data at Rest
 
-The file store is written with mode 0600 (**fixed**, tested) and atomically (write, then rename). It holds client names and money. Put it on an encrypted volume. There is no delete API. Audit and event logs are append-only in code.
+The file store is written with mode 0600 (**fixed**, tested) and atomically (write, then rename). It holds client names and money. Put it on an encrypted volume. There is no delete API. Audit and event logs are append-only in code, and on Postgres also in the database: a trigger on `royal_log` refuses UPDATE, DELETE and TRUNCATE from any caller (tested). The Postgres store holds the same client names and money as the file, so `DATABASE_URL` is a secret and the database should be one only ROYAL uses, with encryption at rest from the provider.
 
 ## 5. Abuse Limits
 
@@ -51,7 +51,7 @@ An identity-service outage returns 503 and refuses. It never fails open (tested)
 
 ## 7. Known Limitations
 
-(a) The in-memory and file stores suit a single instance. A multi-instance deployment needs the Postgres store (next phase).
+(a) The in-memory and file stores suit a single instance. With `DATABASE_URL`, records and logs are shared by every instance (ADR-013), but conversation context, the rate limiter, provider status and metrics are still per process, so a second instance is not yet a full replica. The Deno entry has no Postgres store.
 
 (b) The per-token rate limiter is per process.
 
@@ -69,7 +69,7 @@ An identity-service outage returns 503 and refuses. It never fails open (tested)
 
 (i) The House `send_pending` skill ignores `already_decided` and its dedupe key uses the body's length, not its content (`APPROVAL_MODEL.md`, section 9). Nothing is sent twice, but the reply can misstate the Decision's state and a later House update can collide with an approved one.
 
-(j) Research cache, conversation context and metrics are per process; the conversation context (including drafts under discussion) is in memory and lost on restart.
+(j) Conversation context and metrics are per process (the research cache is in the store, so it is shared when `DATABASE_URL` is set); the conversation context (including drafts under discussion) is in memory and lost on restart.
 
 ## 8. Prompt Injection
 

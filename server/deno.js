@@ -1,10 +1,10 @@
 /* Deno / Supabase Edge Function / Deno Deploy entry.
    Deploy the repository as-is; this file is the entry point.
 
-   Storage note: Deno Deploy and Edge Functions have no durable local disk.
-   This entry uses the in-memory store, so decisions and audit do not survive
-   a restart, until the
-   Postgres store is built: see docs/architecture/INTEGRATION_MODEL.md, section 4. */
+   Storage note: Deno Deploy and Edge Functions have no durable local disk,
+   and this entry loads no Postgres driver, so it uses the in-memory store:
+   decisions and audit do not survive a restart here.  The Postgres store
+   (core/pgstore.js, ADR-013) runs on the Node entry only. */
 
 import { createHandler, fromEnv } from "./handler.js";
 import { MemoryStore } from "../core/store.js";

@@ -21,8 +21,6 @@
      findActiveToken(prefix) / touchToken(id) */
 
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
 const iso = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
 const since0 = (s) => (s == null || s === "" ? null : String(s));
@@ -79,41 +77,9 @@ export class MemoryBridgeStore {
 
 /* ------------------------------------------------------------------ pg --- */
 
-export async function loadPg() {
-  try { return (await import("pg")).default; }
-  catch (_) { throw new Error("DATABASE_URL is set but the 'pg' package is not installed. Run npm install (Render build command: npm install)."); }
-}
-
-export function poolConfig(url, env = {}) {
-  const u = new URL(url);
-  const local = ["localhost", "127.0.0.1", "::1"].indexOf(u.hostname) >= 0;
-  const ssl = env.DATABASE_SSL === "false" || local || /sslmode=disable/.test(url) ? false : { rejectUnauthorized: env.DATABASE_SSL_STRICT === "true" };
-  return { connectionString: url, ssl, max: Number(env.DATABASE_POOL_MAX || 5), idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 };
-}
-
-/* Applies server/migrations/NNN_name.sql in order, once each, under an
-   advisory lock so two instances starting together cannot race. */
-export async function migrate(pool, dir) {
-  const c = await pool.connect();
-  try {
-    await c.query("SELECT pg_advisory_lock(804211)");
-    await c.query("CREATE TABLE IF NOT EXISTS royal_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
-    const done = new Set((await c.query("SELECT name FROM royal_migrations")).rows.map((r) => r.name));
-    const files = (await readdir(dir)).filter((f) => /^\d{3}_[a-z0-9_]+\.sql$/.test(f)).sort();
-    const applied = [];
-    for (const f of files) {
-      if (done.has(f)) continue;
-      const sql = await readFile(join(dir, f), "utf8");
-      await c.query("BEGIN");
-      try { await c.query(sql); await c.query("INSERT INTO royal_migrations (name) VALUES ($1)", [f]); await c.query("COMMIT"); applied.push(f); }
-      catch (e) { await c.query("ROLLBACK"); throw new Error("Migration " + f + " failed: " + e.message); }
-    }
-    return applied;
-  } finally {
-    await c.query("SELECT pg_advisory_unlock(804211)").catch(() => {});
-    c.release();
-  }
-}
+/* The Postgres helpers moved to core/db.js so ROYAL's own store can share
+   them; they are re-exported here so existing imports keep working. */
+export { loadPg, poolConfig, migrate } from "../db.js";
 
 const EV = "id::text AS id, bot_id, realm, request_id::text AS request_id, type, content_markdown, status, author, created_at";
 const evRow = (r) => (r ? { ...r, created_at: iso(r.created_at) } : null);
@@ -121,7 +87,7 @@ const reqRow = (r) => (r ? { ...r, created_at: iso(r.created_at), updated_at: is
 const REQ_PATCH = ["status", "last_error", "conversation_id", "skill"];
 
 export class PgBridgeStore {
-  constructor(pool) { this.pool = pool; this.durable = true; this.kind = "postgres"; }
+  constructor(pool, { ownsPool = true } = {}) { this.pool = pool; this.ownsPool = ownsPool; this.durable = true; this.kind = "postgres"; }
   q(text, values) { return this.pool.query(text, values); }
 
   async createRequest(r) {
@@ -196,5 +162,5 @@ export class PgBridgeStore {
     /* at most once a minute per token, so a busy bot does not write on every call */
     await this.q("UPDATE grokbot_bot_tokens SET last_used_at = now() WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')", [id]);
   }
-  async close() { await this.pool.end(); }
+  async close() { if (this.ownsPool) await this.pool.end(); }
 }

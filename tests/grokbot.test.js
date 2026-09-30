@@ -457,7 +457,7 @@ test("Postgres: migrations apply once and the database enforces same-bot request
   const b2 = await bridgeFromEnv(pgEnv("https://example.com"), { migrationsDir: MIGRATIONS, logger: quiet });   /* second start: nothing to apply */
   const pg = (await import("pg")).default; const pool = new pg.Pool({ connectionString: DB });
   try {
-    assert.equal((await pool.query("SELECT count(*)::int AS n FROM royal_migrations")).rows[0].n, 1);
+    assert.deepEqual((await pool.query("SELECT name FROM royal_migrations ORDER BY name")).rows.map((r) => r.name), ["001_grokbot.sql", "002_royal_store.sql"]);
     await pool.query("INSERT INTO grokbot_requests (id, bot_id, realm, status) VALUES ('11111111-1111-4111-8111-111111111111', 'grace', 'BUSINESS', 'requested')");
     await assert.rejects(pool.query("INSERT INTO grokbot_events (bot_id, realm, request_id, type, content_markdown) VALUES ('ace', 'BUSINESS', '11111111-1111-4111-8111-111111111111', 'result', 'x')"), /grokbot_events_request_same_bot/);
     await pool.query("INSERT INTO grokbot_events (bot_id, realm, request_id, type, content_markdown) VALUES ('grace', 'BUSINESS', '11111111-1111-4111-8111-111111111111', 'result', 'x')");

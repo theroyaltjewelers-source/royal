@@ -4,7 +4,7 @@
 
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadPg, poolConfig, migrate } from "../core/grokbot/store.js";
+import { loadPg, poolConfig, migrate } from "../core/db.js";
 
 const env = process.env;
 if (!env.DATABASE_URL) { console.error("DATABASE_URL is not set."); process.exit(1); }
