@@ -13,6 +13,7 @@
   --gain:#7ee08a;--loss:#ff7a6b;--info:#8fb6d6;--black:#ff3b30;
   --serif:"Lora",Georgia,serif;--sans:"Poppins",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
 *,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-weight:300;font-size:var(--t-md);line-height:1.55;
   padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}

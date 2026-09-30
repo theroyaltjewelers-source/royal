@@ -2,7 +2,20 @@
    state of its own and draws whatever surface each answer asks for. */
 
 const CFG = window.ROYAL_CONFIG || {};
-const $ = (id) => document.getElementById(id);
+const $ = (id) => document.getElementById(id) || MISSING(id);
+/* A page and script from different versions must never leave a black
+   screen: a missing element becomes a harmless stand-in and a visible note. */
+function MISSING(id) {
+  console.warn("ROYAL: element #" + id + " is missing; web/index.html may be older than web/app.js");
+  const el = document.createElement("div"); el.hidden = true; return el;
+}
+window.addEventListener("error", (e) => {
+  const box = document.getElementById("signin") || document.body;
+  if (box.hidden) box.hidden = false;
+  const p = document.createElement("p"); p.className = "err";
+  p.textContent = "ROYAL hit an error while loading (" + (e.message || "unknown") + "). Check that web/index.html, web/app.js and web/styles.css are from the same version.";
+  box.appendChild(p);
+});
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-US");
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
