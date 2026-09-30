@@ -150,3 +150,31 @@ test("without a configured passcode, login says so and no session can be forged"
   const m = await (await h(new Request("https://royal.test/v1/login-methods"))).json();
   assert.equal(m.passcode, false);
 });
+
+
+/* ----------------------------------------------------------------- Grok -- */
+test("Grok: retries without optional settings, reports xAI's reason, never leaks the key", async () => {
+  const calls = [];
+  const fetchImpl = async (url, o) => {
+    const b = JSON.parse(o.body); calls.push(b);
+    if (b.max_tokens !== undefined) return { ok: false, status: 400, json: async () => ({ error: { message: "max_tokens not supported" } }) };
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "READY" } }] }) };
+  };
+  const g = new GrokProvider({ apiKey: "xai-KEYKEYKEYKEYKEYKEY99", model: "grok-4.7", fetchImpl });
+  const t = await g.test();
+  assert.equal(t.ok, true); assert.equal(calls.length, 2);
+  assert.ok(calls.every((c) => c.temperature === undefined && c.response_format === undefined));
+  const bad = new GrokProvider({ apiKey: "xai-KEYKEYKEYKEYKEYKEY99", model: "grok-nope", fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({ error: { message: "The model grok-nope does not exist" } }) }) });
+  const b = await bad.test();
+  assert.equal(b.ok, false); assert.match(b.detail, /does not exist/);
+  assert.equal(bad.status().status, "DEGRADED");
+  assert.ok(!/KEYKEY/.test(JSON.stringify([t, b, g, bad, g.status(), bad.status()])));
+});
+test("the Test Grok endpoint is owner-only and says plainly when Grok is not set up", async () => {
+  const { call } = app();
+  assert.equal((await call("POST", "/v1/provider/test", { token: "t-staff" })).status, 403);
+  const royal = createRoyal({ store: new MemoryStore() });
+  const h = createHandler({ royal, auth: async () => ({ id: "u", role: "owner" }) });
+  const r = await (await h(new Request("https://royal.test/v1/provider/test", { method: "POST", headers: { Authorization: "Bearer x" } }))).json();
+  assert.equal(r.ok, false); assert.equal(r.failed_because, "PROVIDER_NOT_CONNECTED");
+});

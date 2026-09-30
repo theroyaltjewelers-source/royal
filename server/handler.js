@@ -92,6 +92,15 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
       if (realmQ && ["BUSINESS", "PERSONAL"].indexOf(realmQ) < 0) return fail(req, 400, "BAD_REALM", "Realm must be BUSINESS or PERSONAL.");
       if (req.method === "GET" && path === "/v1/domains") return json(req, 200, { ok: true, domains: royal.domains(realmQ) });
       if (req.method === "GET" && path === "/v1/activity") return json(req, 200, { ok: true, activity: await royal.audit.executiveLedger({ limit: 100, realm: realmQ }) });
+      if (req.method === "POST" && path === "/v1/provider/test") {
+        if (!royal.provider || typeof royal.provider.test !== "function")
+          return json(req, 200, { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", detail: (royal.provider && royal.provider.status().detail) || "No language provider is configured." });
+        const st = royal.provider.status();
+        if (st.status === "NOT_CONNECTED") return json(req, 200, { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", detail: st.detail });
+        const t = await royal.provider.test();
+        await royal.audit.record({ actor: "tahir", action: "PROVIDER_TESTED", summary: "Grok test: " + (t.ok ? "working" : "failed (" + t.failed_because + ")"), executive: true });
+        return json(req, 200, t);
+      }
       if (req.method === "GET" && path === "/v1/developer/log") return json(req, 200, { ok: true, log: await royal.audit.developerLog({ limit: 500 }) });
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;

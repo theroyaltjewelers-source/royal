@@ -376,7 +376,15 @@ async function loadSystems() {
     return;
   }
   const r = await api("POST", "/v1/command", { skill: "system_status", content: "systems", conversation_id: CONVO + "-sys", modality: "ui_action" });
-  $("view-systems").innerHTML = r.ok ? SURFACES.systems(r.result.surface) : '<p class="err">' + esc(r.message) + "</p>";
+  $("view-systems").innerHTML = (r.ok ? SURFACES.systems(r.result.surface) : '<p class="err">' + esc(r.message) + "</p>") +
+    '<p><button type="button" id="testGrok">Test Grok</button> <span class="quiet" id="testGrokOut"></span></p>';
+  $("testGrok").addEventListener("click", async () => {
+    $("testGrok").disabled = true; $("testGrokOut").textContent = "Asking Grok…";
+    const t = await api("POST", "/v1/provider/test");
+    $("testGrok").disabled = false;
+    $("testGrokOut").textContent = t.ok ? "Working. " + t.model + " answered in " + (t.ms / 1000).toFixed(1) + "s."
+      : "Not working: " + (t.detail || t.failed_because || t.message || "unknown") + ".";
+  });
   if (r.ok) window.__prov = r.result.surface.provider;
 }
 
