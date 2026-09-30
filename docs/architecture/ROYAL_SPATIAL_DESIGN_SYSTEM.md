@@ -38,7 +38,7 @@ Dark glass panels, 16px radius, a hairline border, a 2px risk bar on the left ed
 
 ## 6. Motion
 
-Ease-out curves, nothing bouncy. The Core's layout eases over about half a second. Reduced motion removes breathing, particles, stagger and blur; states still change.
+Ease-out curves. The one spring is the Core under a finger: a soft squeeze on press and a small, damped overshoot on release. The Core's layout eases over about half a second. A thin HUD (tick ring, broken arcs, faint scanlines) sits around the Core; it moves only by transform and opacity, follows the true state and the voice level, and is hidden from assistive technology. Reduced motion removes breathing, particles, stagger, blur, the spring and the HUD's rotation; states still change.
 
 ## 7. Touch
 
