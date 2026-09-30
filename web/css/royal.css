@@ -40,6 +40,8 @@ button { cursor: pointer; }
 #core { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: manipulation; }
 .wake { position: fixed; border-radius: 50%; border: 0; background: transparent; z-index: 3; touch-action: manipulation; transition: left .6s var(--ease), top .6s var(--ease), width .6s var(--ease), height .6s var(--ease); }
 .wake:focus-visible { outline-offset: -6px; }
+/* Pressing and holding the Core must not select nearby text or open the iOS callout. */
+#core, .wake { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 body[data-auth="out"] .wake, body[data-auth="out"] .marks, body[data-auth="out"] .column { visibility: hidden; }
 
 /* --------------------------------------------------------------- marks */
@@ -50,6 +52,7 @@ body[data-auth="out"] .wake, body[data-auth="out"] .marks, body[data-auth="out"]
 .id { margin: 0 0 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100vw - 80px); font: 500 10.5px/1 var(--sans); letter-spacing: .22em; text-transform: uppercase; color: var(--ink-3); }
 .id .word { color: var(--ink-2); letter-spacing: .34em; }
 .id .sep { margin: 0 .35em; opacity: .6; }
+#stateLbl { transition: color .5s var(--ease); }
 body[data-state="WARNING"] #stateLbl, body[data-state="WAITING_FOR_APPROVAL"] #stateLbl { color: var(--amber); }
 body[data-state="FAILURE"] #stateLbl { color: var(--red); }
 body[data-realm="PERSONAL"] #realmLbl { color: var(--ink); }
@@ -379,3 +382,110 @@ body[data-bots="1"] .marks, body[data-bots="1"] .typebar { visibility: hidden; }
 @media (prefers-contrast: more) {
   :root { --ink-2: #d6dbcd; --ink-3: #aab0a0; --line: rgba(233, 237, 226, .22); --glass: rgba(8, 9, 7, .94); }
 }
+
+/* =====================================================================
+   HUD pass: a quiet heads-up layer around the Core.  Everything here is
+   drawn with CSS (no images), moves only by transform and opacity, follows
+   the true state on body[data-state], and stands still under reduced motion.
+   ===================================================================== */
+:root { --hud-rgb: 149, 254, 0; }
+body[data-state="WARNING"], body[data-state="WAITING_FOR_APPROVAL"] { --hud-rgb: 255, 181, 74; }
+body[data-state="FAILURE"] { --hud-rgb: 255, 90, 72; }
+
+/* ------------------------------------------------------------ the rings */
+.hud { position: fixed; left: 0; top: 0; z-index: 1; width: var(--d, 220px); height: var(--d, 220px); margin: calc(var(--d, 220px) / -2) 0 0 calc(var(--d, 220px) / -2);
+  transform: translate3d(var(--x, 50vw), var(--y, 40vh), 0); pointer-events: none; opacity: .85;
+  transition: transform .6s var(--ease), width .6s var(--ease), height .6s var(--ease), margin .6s var(--ease), opacity .8s var(--ease); }
+body[data-auth="out"] .hud { visibility: hidden; }
+body[data-state="OFFLINE"] .hud { opacity: .25; }
+.hud .ring, .hud .lv { position: absolute; border-radius: 50%; }
+.hud .lv { inset: 0; transform: scale(calc(1 + var(--lvl, 0) * .08)); }
+/* faint scanlines across the light: the hologram */
+.hud .holo { inset: 20%; background: repeating-linear-gradient(0deg, rgba(3, 4, 3, .22) 0 1px, transparent 1px 3px);
+  -webkit-mask-image: radial-gradient(closest-side, #000 62%, transparent 100%); mask-image: radial-gradient(closest-side, #000 62%, transparent 100%); opacity: .7; }
+.hud .r1 { inset: 16%; border: 1px solid rgba(var(--hud-rgb), .12); transition: border-color .8s var(--ease); }
+/* a fine tick ring, turning very slowly */
+.hud .r2 { inset: 8%; background: repeating-conic-gradient(rgba(var(--hud-rgb), .55) 0deg .5deg, transparent .5deg 5deg);
+  -webkit-mask-image: radial-gradient(closest-side, transparent calc(100% - 6px), #000 calc(100% - 5px), #000 calc(100% - 1px), transparent 100%);
+  mask-image: radial-gradient(closest-side, transparent calc(100% - 6px), #000 calc(100% - 5px), #000 calc(100% - 1px), transparent 100%);
+  opacity: .35; animation: hud-spin 140s linear infinite; will-change: transform; transition: opacity .8s var(--ease); }
+/* broken arcs, the other way; they swell with the voice */
+.hud .r3 { inset: 0; background: conic-gradient(from 10deg, rgba(var(--hud-rgb), .6) 0 42deg, transparent 0 118deg, rgba(var(--hud-rgb), .6) 0 124deg, transparent 0 196deg, rgba(var(--hud-rgb), .6) 0 250deg, transparent 0 302deg, rgba(var(--hud-rgb), .6) 0 305deg, transparent 0);
+  -webkit-mask-image: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px), #000 100%, transparent 100%);
+  mask-image: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px), #000 100%, transparent 100%);
+  opacity: .3; animation: hud-spin 70s linear infinite reverse; will-change: transform; transition: opacity .8s var(--ease); }
+/* THINKING (and UNDERSTANDING): a sweep chasing round the Core */
+.hud .scan { inset: 4%; background: conic-gradient(from 0deg, transparent 0 280deg, rgba(var(--hud-rgb), .55) 360deg);
+  -webkit-mask-image: radial-gradient(closest-side, transparent calc(100% - 9px), #000 calc(100% - 8px), #000 100%, transparent 100%);
+  mask-image: radial-gradient(closest-side, transparent calc(100% - 9px), #000 calc(100% - 8px), #000 100%, transparent 100%);
+  opacity: 0; animation: hud-spin 2.2s linear infinite; animation-play-state: paused; transition: opacity .6s var(--ease); }
+@keyframes hud-spin { to { transform: rotate(360deg); } }
+body[data-state="AWAKE"] .hud .r2, body[data-state="LISTENING"] .hud .r2 { opacity: .55; }
+body[data-state="LISTENING"] .hud .r3, body[data-speaking="1"] .hud .r3, body[data-rt="speaking"] .hud .r3 { opacity: .75; }
+body[data-state="LISTENING"] .hud .r1 { border-color: rgba(var(--hud-rgb), .3); }
+body[data-state="THINKING"] .hud .scan, body[data-state="UNDERSTANDING"] .hud .scan { opacity: .85; animation-play-state: running; }
+body[data-state="WAITING_FOR_APPROVAL"] .hud .r3, body[data-state="WARNING"] .hud .r3 { opacity: .6; }
+
+/* ------------------------------------------------------ status readout */
+.id { font-variant-numeric: tabular-nums; }
+#stateLbl { color: var(--ink-2); transition: color .5s var(--ease); }
+body[data-state="LISTENING"] #stateLbl, body[data-state="THINKING"] #stateLbl, body[data-state="UNDERSTANDING"] #stateLbl { color: #d9ffb0; }
+/* five small bars after the state: they follow the voice while listening or
+   speaking, ripple while thinking, and rest low otherwise */
+.mode { display: none; align-items: center; gap: 2px; height: 10px; margin-left: 9px; vertical-align: -1px; }
+.mode i { display: block; width: 2px; height: 100%; border-radius: 1px; background: rgb(var(--hud-rgb)); opacity: .35; transform: scaleY(.3); transition: transform .25s var(--ease), opacity .4s var(--ease); }
+.mode i:nth-child(1) { --k: .5; --n: 0; } .mode i:nth-child(2) { --k: .85; --n: 1; } .mode i:nth-child(3) { --k: 1; --n: 2; } .mode i:nth-child(4) { --k: .7; --n: 3; } .mode i:nth-child(5) { --k: .45; --n: 4; }
+body[data-state="LISTENING"] .mode i, body[data-speaking="1"] .mode i, body[data-rt="speaking"] .mode i { opacity: 1; transform: scaleY(calc(.3 + var(--lvl, 0) * var(--k) * .7)); transition: opacity .4s var(--ease); }
+body[data-state="THINKING"] .mode i, body[data-state="UNDERSTANDING"] .mode i { opacity: 1; animation: mode-think 1.1s ease-in-out infinite; animation-delay: calc(var(--n) * 110ms); }
+@keyframes mode-think { 0%, 100% { transform: scaleY(.3); } 40% { transform: scaleY(1); } }
+/* shown only while something is happening, so a long state name never gets squeezed */
+body[data-state="LISTENING"] .mode, body[data-state="THINKING"] .mode, body[data-state="UNDERSTANDING"] .mode, body[data-speaking="1"] .mode, body[data-rt="speaking"] .mode { display: inline-flex; }
+body[data-auth="out"] .mode { visibility: hidden; }
+.clock { margin: 0 8px 0 auto; font: 400 11px/1 var(--mono); letter-spacing: .14em; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+@media (max-width: 699px) { .clock { display: none; } }
+
+/* ------------------------------------------------------------ captions */
+.caption { text-shadow: 0 1px 16px rgba(0, 0, 0, .6); }
+.caption:not(.quiet):not(:empty)::before { content: "ROYAL"; display: block; margin: 0 0 8px; font: 500 10px/1 var(--sans); letter-spacing: .34em; font-style: normal; color: rgba(149, 254, 0, .75); text-shadow: none; }
+.heard:not(:empty)::before { content: "You"; margin-right: .7em; font: 500 10px/1 var(--sans); letter-spacing: .3em; text-transform: uppercase; font-style: normal; color: var(--ink-3); vertical-align: 1px; }
+body[data-layout="rest"] .caption:not(.quiet):not(:empty)::before { text-indent: .34em; }
+
+/* ------------------------------------------------------ glass and edges */
+.obj::after { content: ""; position: absolute; left: 18px; right: 18px; top: -1px; height: 1px; background: linear-gradient(90deg, transparent, rgba(149, 254, 0, .32), transparent); pointer-events: none; }
+.obj.decision::after, .obj.rk-YELLOW::after, .obj.rk-ORANGE::after { background: linear-gradient(90deg, transparent, rgba(255, 181, 74, .4), transparent); }
+.typebar:focus-within { border-color: rgba(149, 254, 0, .42); box-shadow: 0 0 0 4px rgba(149, 254, 0, .06), 0 14px 44px -22px rgba(149, 254, 0, .45); }
+.glyph { transition: color .2s, background .2s, transform .12s var(--ease); }
+.glyph:active { transform: scale(.92); }
+
+/* ------------------------------------------------ panels leave smoothly */
+.sheet.leaving { animation: fade .2s ease-in reverse both; pointer-events: none; }
+.sheet.leaving .sheet-in { animation: slide .2s ease-in reverse both; }
+.typebar.leaving { animation: cap .2s ease-in reverse both; pointer-events: none; }
+
+/* -------------------------------------------------------------- notice */
+.notice { position: fixed; z-index: 8; top: calc(var(--safe-t) + 58px); left: 0; right: 0; margin: 0 auto; width: min(560px, calc(100vw - 24px));
+  display: flex; align-items: flex-start; gap: 4px; padding: 10px 4px 10px 16px; border-radius: 14px; background: var(--glass-2); border: 1px solid rgba(255, 181, 74, .42);
+  box-shadow: 0 18px 50px -30px rgba(255, 181, 74, .5); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); animation: cap .4s var(--ease) both; }
+.notice p { margin: 0; flex: 1; padding-top: 4px; font-size: 13.5px; line-height: 1.45; color: var(--ink); }
+.notice b { display: block; margin-bottom: 2px; font: 500 10.5px/1.4 var(--sans); letter-spacing: .18em; text-transform: uppercase; color: var(--amber); }
+.notice[data-tone="calm"] { border-color: var(--line-2); box-shadow: none; }
+.notice[data-tone="calm"] b { color: var(--ink-2); }
+body[data-auth="out"] .notice { display: none; }
+/* Wide screens with an answer showing: the column starts below the notice. */
+body[data-notice="1"][data-wide="1"][data-layout="content"] .column { padding-top: 84px; }
+/* Phones: the notice sits low, above the bottom controls, so it never covers
+   the Core or the answer's first lines; the column makes room for it. */
+@media (max-width: 699px) {
+  .notice { top: auto; bottom: calc(var(--safe-b) + 66px); }
+  body[data-notice="1"] .column { padding-bottom: calc(var(--safe-b) + 200px); }
+  body[data-notice="1"][data-typing="1"] .notice { bottom: calc(var(--safe-b) + 72px); }
+}
+.bp-warn { margin: 8px 0 0; padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(255, 181, 74, .4); background: rgba(255, 181, 74, .07); color: #ffe2b8; font-size: 12.5px; line-height: 1.45; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hud .ring, .mode i { animation: none !important; }
+  .hud .lv { transform: none; }
+  body[data-state="THINKING"] .hud .scan, body[data-state="UNDERSTANDING"] .hud .scan { opacity: .5; }
+  body[data-state="THINKING"] .mode i, body[data-state="UNDERSTANDING"] .mode i { transform: scaleY(.7); }
+}
+@media (prefers-contrast: more) { .hud { opacity: .5; } .caption { text-shadow: none; } }

@@ -75,3 +75,150 @@ test("bot markdown is rendered safely: no raw HTML, no script links, only a fixe
   assert.match(good, /<h3>Briefing<\/h3>/); assert.match(good, /<strong>Two<\/strong>/); assert.match(good, /<ul><li>one <code>x<\/code><\/li><li>two<\/li><\/ul>/);
   assert.match(good, /<a href="https:\/\/example\.com\/a\?b=1&amp;c=2" target="_blank" rel="noopener noreferrer nofollow">Open<\/a>/);
 });
+
+test("pressing the Core: the light answers on pointerdown, a long press opens no menu, and the action stays on click", () => {
+  const app = readFileSync(join(WEB, "js", "app.js"), "utf8");
+  const css = readFileSync(join(WEB, "css", "royal.css"), "utf8");
+  assert.match(app, /addEventListener\("pointerdown", pressStart/, "the Core gives feedback the moment it is pressed");
+  assert.match(app, /addEventListener\("contextmenu", noHoldMenu\)/, "a long press on a phone opens no context menu over the Core");
+  assert.match(app, /\$\("wake"\)\.addEventListener\("click", wake\)/, "what a press does still runs on click (keyboard and user-gesture rules)");
+  assert.match(css, /#core, \.wake \{[^}]*user-select: none[^}]*-webkit-touch-callout: none/, "holding the Core selects no text");
+});
+
+test("the Core keeps real time at rest: time is measured from the last frame drawn, not from skipped frames", () => {
+  const core = readFileSync(join(WEB, "js", "core.js"), "utf8");
+  const loop = core.slice(core.indexOf("_loop() {"), core.indexOf("_ease(dt) {"));
+  assert.ok(loop.indexOf("const dt") > loop.indexOf("< 32) { requestAnimationFrame(step); return; }"), "dt must be computed after the 30 fps skip, or the Core runs slow at rest and lurches when touched");
+  assert.match(loop, /if \(!atRest\) this\._watch\(dt\)/, "30 fps at rest must not count as a slow device");
+  assert.match(core, /pulse\(a = 0\.7\) \{ this\.ampTarget = /, "a pulse eases in; it does not jump the light");
+});
+
+test("a second touch while the microphone is starting does not start a second recognizer", async () => {
+  let starts = 0, aborts = 0;
+  class FakeSR { start() { starts++; } abort() { aborts++; if (this.onend) this.onend(); } stop() { if (this.onend) this.onend(); } }
+  const saved = { window: globalThis.window, localStorage: globalThis.localStorage };
+  /* browser globals voice.js touches, added only where Node lacks them */
+  const shims = { navigator: { language: "en-US" }, cancelAnimationFrame: () => {} };
+  const added = Object.keys(shims).filter((k) => !(k in globalThis));
+  for (const k of added) Object.defineProperty(globalThis, k, { value: shims[k], configurable: true });
+  globalThis.window = { SpeechRecognition: FakeSR };
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+  try {
+    const { Voice } = await import("../web/js/voice.js?press=" + Date.now());
+    const v = new Voice({});
+    assert.equal(await v.listen(), true);
+    assert.equal(await v.listen(), true);
+    assert.equal(starts, 1, "only one recognizer is started while the first is still starting");
+    v.cancel();
+    assert.equal(aborts, 1, "cancelling while starting stops the pending recognizer");
+    assert.equal(await v.listen(), true);
+    assert.equal(starts, 2, "after a cancel, the next touch starts listening again");
+    v.cancel();
+  } finally {
+    globalThis.window = saved.window; globalThis.localStorage = saved.localStorage;
+    for (const k of added) delete globalThis[k];
+  }
+});
+
+/* ------------------------------------------------ the Core feels alive --- */
+/* Browser globals the Core and Sound touch, added only where Node lacks them
+   and removed afterwards. */
+async function withBrowser(extra, fn) {
+  const shims = { matchMedia: () => ({ matches: false }), document: { addEventListener() {}, hidden: false }, localStorage: { getItem: () => null, setItem() {} }, requestAnimationFrame: () => 0, ...extra };
+  const saved = {}, added = [];
+  for (const [k, v] of Object.entries(shims)) {
+    if (k in globalThis) { saved[k] = Object.getOwnPropertyDescriptor(globalThis, k); }
+    else added.push(k);
+    Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  }
+  try { return await fn(); }
+  finally {
+    for (const k of added) delete globalThis[k];
+    for (const [k, d] of Object.entries(saved)) Object.defineProperty(globalThis, k, d);
+  }
+}
+const noCanvas = { getContext: () => null, addEventListener() {} };
+const frames = (core, seconds, each) => { for (let t = 0; t < seconds; t += 1 / 60) { core._ease(1 / 60); if (each) each(core); } };
+
+test("idle breathing is irregular: organic() stays in range and does not repeat like a plain sine", async () => {
+  const { organic } = await import("../web/js/core.js");
+  const P = 2 * Math.PI / 0.83;
+  let maxAbs = 0, diff = 0;
+  for (let t = 0; t < 120; t += 0.1) { maxAbs = Math.max(maxAbs, Math.abs(organic(t))); diff = Math.max(diff, Math.abs(organic(t) - organic(t + P))); }
+  assert.ok(maxAbs <= 1 && maxAbs > 0.6, "bounded to [-1, 1] and actually moving");
+  assert.ok(diff > 0.2, "one period of the main wave later, the rhythm is different");
+});
+
+test("a press squeezes softly and the release springs back with a slight overshoot, then settles", async () => {
+  await withBrowser({}, async () => {
+    const { RoyalCore } = await import("../web/js/core.js?alive=1");
+    const { STATES } = await import("../web/js/state.js");
+    const core = new RoyalCore(noCanvas); core.set(STATES.AMBIENT);
+    core.press(true); let over = 0; frames(core, 0.12, (c) => { over = Math.max(over, c.pressX); });
+    assert.ok(core.pressX > 0.8, "the squeeze arrives within about a tenth of a second");
+    assert.ok(over < 1.05, "and does not bounce going in");
+    core.press(false); let min = 0; frames(core, 2, (c) => { min = Math.min(min, c.pressX); });
+    assert.ok(min < -0.1 && min > -0.4, "the release overshoots a little (" + min.toFixed(3) + ")");
+    assert.ok(Math.abs(core.pressX) < 0.01 && !core.moving, "and comes to rest");
+  });
+});
+
+test("reduced motion: a press still glows, with no spring and no overshoot", async () => {
+  await withBrowser({}, async () => {
+    const { RoyalCore } = await import("../web/js/core.js?alive=2");
+    const { STATES } = await import("../web/js/state.js");
+    const core = new RoyalCore(noCanvas, { reducedMotion: true }); core.set(STATES.AMBIENT);
+    core.press(true); frames(core, 0.3); assert.ok(core.pressX > 0.9);
+    core.press(false); let min = 1; frames(core, 1.5, (c) => { min = Math.min(min, c.pressX); });
+    assert.ok(min >= 0, "never below rest");
+  });
+});
+
+test("state changes glide: they start gently, never overshoot, and arrive; THINKING has its own motion", async () => {
+  await withBrowser({}, async () => {
+    const { RoyalCore } = await import("../web/js/core.js?alive=3");
+    const { STATES } = await import("../web/js/state.js");
+    const core = new RoyalCore(noCanvas); core.set(STATES.AMBIENT); core.set(STATES.THINKING);
+    const from = STATES.AMBIENT.energy, to = STATES.THINKING.energy;
+    core._ease(1 / 60);
+    const first = (core.cur.energy - from) / (to - from);
+    assert.ok(first < 0.01, "the first frame moves less than 1% of the way (an eased start, not a snap)");
+    let peak = 0; frames(core, 2.5, (c) => { peak = Math.max(peak, c.cur.energy); });
+    assert.ok(peak <= to + 1e-6, "no overshoot");
+    assert.ok(Math.abs(core.cur.energy - to) < 0.01, "arrives within about two seconds");
+    assert.ok(core.cur.think > 0.98, "THINKING carries its own sweep, distinct from idle");
+    for (const [name, s] of Object.entries(STATES)) if (name !== "THINKING") assert.equal(s.think, 0, name + " has no thinking sweep");
+  });
+});
+
+test("the Core follows ROYAL's voice: speaking with no level lifts it; stopping lets it settle", async () => {
+  await withBrowser({}, async () => {
+    const { RoyalCore } = await import("../web/js/core.js?alive=4");
+    const { STATES } = await import("../web/js/state.js");
+    const core = new RoyalCore(noCanvas); core.set(STATES.RESPONDING);
+    core.setSpeaking(true); frames(core, 1); assert.ok(core.amp > 0.03, "speaking moves the Core");
+    core.setSpeaking(false); frames(core, 3); assert.ok(core.amp < 0.01, "silence lets it rest");
+    core.setAmplitude(0.8); frames(core, 0.1); assert.ok(core.amp > 0.3, "a microphone level is followed within a tenth of a second");
+  });
+});
+
+test("a press taps the phone gently: very short, never under reduced motion, never before the page was touched, no double knock", async () => {
+  const calls = [];
+  const nav = { vibrate: (p) => { calls.push(p); return true; }, userActivation: { hasBeenActive: true } };
+  await withBrowser({ navigator: nav }, async () => {
+    const { Sound } = await import("../web/js/sound.js?alive=1");
+    const s = new Sound();
+    assert.equal(s.tap(), true); assert.deepEqual(calls, [6]);
+    s.play("wake"); assert.deepEqual(calls, [6], "the wake buzz right after the tap is skipped");
+    nav.userActivation.hasBeenActive = false; assert.equal(s.tap(), false, "not before the page was touched");
+    nav.userActivation.hasBeenActive = true;
+    globalThis.matchMedia = () => ({ matches: true });
+    assert.equal(new Sound().tap(), false, "not under reduced motion");
+  });
+});
+
+test("the page wires the alive Core: press and release, the voice's speaking state", () => {
+  const app = readFileSync(join(WEB, "js", "app.js"), "utf8");
+  assert.match(app, /core\.press\(true\)/); assert.match(app, /\["pointerup", "pointercancel", "blur"\]\.forEach/);
+  assert.match(app, /onSpeaking: \(on\) => /); assert.match(app, /sound\.tap\(\)/);
+});

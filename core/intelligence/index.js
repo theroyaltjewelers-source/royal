@@ -16,6 +16,7 @@
      { status, summary, findings, surface, context, delegations }
    `context` is a patch to the conversation's active context. */
 
+import { providerLine } from "../../web/js/notices.js";
 import { EVIDENCE as E, RUN_STATUS, CONFIDENCE as C, EMAIL_STATUS as ES, PRIORITY as P, RISK as R } from "../enums.js";
 import { stableHash, newId } from "../util.js";
 import { S } from "./jsonschema.js";
@@ -109,7 +110,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
         messages: [{ role: "user", content: text }] });
       if (r.ok) return say(RUN_STATUS.OK, r.text.slice(0, 1500), { type: "world", label: E.MODEL_KNOWLEDGE, note: "From the language model's general knowledge, not checked against a source." });
       if (rs.status === "CONNECTED" && policy.allow_search) return doResearch(text, intent, policy);
-      return say(RUN_STATUS.FAILED, "The language provider didn't answer (" + r.failed_because + "). Nothing was made up in its place.", { type: "text" });
+      return say(RUN_STATUS.FAILED, providerLine(r) + " Nothing was made up in its place.", { type: "text" });
     }
     /* No model: a world question may still be answered from cited research
        rather than not at all.  This is a deliberate fallback, not the

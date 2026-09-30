@@ -13,12 +13,12 @@
    typing is offered.  Nothing here pretends to have heard anything. */
 
 export class Voice {
-  constructor({ onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary } = {}) {
+  constructor({ onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary, onSpeaking } = {}) {
     this.SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
     this.canListen = !!this.SR;
     this.canSpeak = "speechSynthesis" in window;
-    this.cb = { onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary };
-    this.rec = null; this.listening = false; this.speaking = false;
+    this.cb = { onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary, onSpeaking };
+    this.rec = null; this.listening = false; this.starting = false; this.speaking = false;
     this.muted = (() => { try { return localStorage.getItem("royal.muted") === "1"; } catch (_) { return false; } })();
     this.voice = null;
     if (this.canSpeak) { const pick = () => { this.voice = this._pickVoice(); }; pick(); speechSynthesis.onvoiceschanged = pick; }
@@ -36,13 +36,16 @@ export class Voice {
   async listen() {
     if (!this.canListen) { this.cb.onError && this.cb.onError("unsupported", "Voice input isn't available in this browser. You can type instead."); return false; }
     this.stopSpeaking();
-    if (this.listening) return true;
+    /* Already listening, or starting to (the microphone can take a moment):
+       a second touch must not start a second recognizer, which fails and
+       drops Tahir into typing with an error. */
+    if (this.listening || this.starting) return true;
     const rec = new this.SR(); this.rec = rec;
     rec.lang = navigator.language && /^en/.test(navigator.language) ? navigator.language : "en-US";
     rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
     let finalText = "", heard = false;
     const silence = setTimeout(() => { if (!heard) rec.stop(); }, 8000);
-    rec.onstart = () => { this.listening = true; this.cb.onState && this.cb.onState("listening"); this._meter(); };
+    rec.onstart = () => { this.starting = false; this.listening = true; this.cb.onState && this.cb.onState("listening"); this._meter(); };
     rec.onresult = (e) => {
       heard = true; let t = "";
       for (const r of e.results) { t += r[0].transcript; if (r.isFinal) finalText = t; }
@@ -56,20 +59,25 @@ export class Voice {
       if (msg) this.cb.onError && this.cb.onError(e.error, msg);
     };
     rec.onend = () => {
-      clearTimeout(silence); this.listening = false; this._stopMeter();
+      clearTimeout(silence); if (this.rec === rec) this.starting = false; this.listening = false; this._stopMeter();
       this.cb.onState && this.cb.onState("idle");
       if (finalText.trim()) this.cb.onFinal && this.cb.onFinal(finalText.trim());
     };
-    try { rec.start(); return true; } catch (e) { this.cb.onError && this.cb.onError("start", "Voice couldn't start. You can type instead."); return false; }
+    try { this.starting = true; rec.start(); return true; } catch (e) { this.starting = false; this.cb.onError && this.cb.onError("start", "Voice couldn't start. You can type instead."); return false; }
   }
 
-  cancel() { if (this.rec && this.listening) { try { this.rec.abort(); } catch (_) {} } this.listening = false; this._stopMeter(); }
+  cancel() { if (this.rec && (this.listening || this.starting)) { try { this.rec.abort(); } catch (_) {} } this.starting = false; this.listening = false; this._stopMeter(); }
 
   async _meter() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      /* Listening may have ended while the microphone was opening: close it
+         at once rather than leave it running with nothing reading it. */
+      if (!this.listening) { stream.getTracks().forEach((t) => t.stop()); return; }
+      this.stream = stream;
       const AC = window.AudioContext || window.webkitAudioContext; this.ac = this.ac || new AC();
+      if (this.ac.state === "suspended") { try { const p = this.ac.resume(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }   /* else the level meter reads silence and the Core does not move with the voice */
       const src = this.ac.createMediaStreamSource(this.stream), an = this.ac.createAnalyser(); an.fftSize = 512; src.connect(an);
       const buf = new Uint8Array(an.fftSize);
       const tick = () => {
@@ -90,12 +98,14 @@ export class Voice {
     if (this.voice) u.voice = this.voice;
     u.rate = 1.02; u.pitch = 0.96;
     u.onboundary = () => this.cb.onSpeechBoundary && this.cb.onSpeechBoundary();
-    u.onend = () => { this.speaking = false; onEnd && onEnd(); };
-    u.onerror = () => { this.speaking = false; onEnd && onEnd(); };
+    u.onstart = () => this._speakingNow(true);   /* the Core moves when sound actually starts, not before */
+    u.onend = () => { this.speaking = false; this._speakingNow(false); onEnd && onEnd(); };
+    u.onerror = () => { this.speaking = false; this._speakingNow(false); onEnd && onEnd(); };
     this.speaking = true;
     speechSynthesis.speak(u);
     return true;
   }
   /* Barge-in: stop mid-sentence. */
-  stopSpeaking() { if (this.canSpeak && (this.speaking || speechSynthesis.speaking)) speechSynthesis.cancel(); this.speaking = false; }
+  stopSpeaking() { if (this.canSpeak && (this.speaking || speechSynthesis.speaking)) speechSynthesis.cancel(); this.speaking = false; this._speakingNow(false); }
+  _speakingNow(on) { if (this._sp === on) return; this._sp = on; this.cb.onSpeaking && this.cb.onSpeaking(on); }
 }

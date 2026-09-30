@@ -17,6 +17,7 @@ import { SourceHealth } from "./sources.js";
 import { resolveEntity, ConversationContext } from "./context.js";
 import { interpret } from "./intent.js";
 import { compose } from "./composer.js";
+import { providerLine } from "../web/js/notices.js";
 import { agentResult, validateResult } from "./result.js";
 import { UnavailableProvider, parseModelJson } from "./providers/provider.js";
 import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM } from "./enums.js";
@@ -181,7 +182,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     ].join("\n");
     const r = await provider.complete({ system, json: true, max_tokens: 700,
       messages: [{ role: "user", content: "<data>" + JSON.stringify(facts) + "</data>\n\nQuestion: " + cmd.content }] });
-    if (!r.ok) return { status: RUN_STATUS.FAILED, summary: "The language provider did not answer (" + r.failed_because + "). No answer was made up in its place.", findings: [], surface: { type: "text" } };
+    if (!r.ok) return { status: RUN_STATUS.FAILED, summary: providerLine(r) + " No answer was made up in its place.", findings: [], surface: { type: "text" } };
     const p = parseModelJson(r.text);
     if (!p.ok || typeof p.value.answer !== "string") return { status: RUN_STATUS.FAILED, summary: "The language provider's reply was not in the required form, so it was discarded.", findings: [], surface: { type: "text" } };
     const known = new Set(facts.map((f) => f.id));

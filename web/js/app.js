@@ -22,6 +22,7 @@ import { validateSpec } from "./schema.js";
 import { esc } from "./primitives.js";
 import { BotsPanel } from "./bots.js";
 import { RealtimeVoice } from "./realtime.js";
+import { providerNotice, providerProblem, serverProblem } from "./notices.js";
 
 const CFG = window.ROYAL_CONFIG || {};
 const $ = (id) => document.getElementById(id);
@@ -38,7 +39,18 @@ core.set(STATES.OFFLINE);
 core.onFallback = (mode) => { document.body.dataset.render = mode; };
 document.body.dataset.render = core.mode;
 
-stage.onLayout = (b) => { const w = $("wake"); w.style.left = (b.x - b.r * 1.15) + "px"; w.style.top = (b.y - b.r * 1.15) + "px"; w.style.width = w.style.height = (b.r * 2.3) + "px"; };
+stage.onLayout = (b) => {
+  const w = $("wake"); w.style.left = (b.x - b.r * 1.15) + "px"; w.style.top = (b.y - b.r * 1.15) + "px"; w.style.width = w.style.height = (b.r * 2.3) + "px";
+  const h = $("hud").style; h.setProperty("--x", b.x + "px"); h.setProperty("--y", b.y + "px"); h.setProperty("--d", (b.r * 3.0) + "px");
+};
+/* The HUD rings and the status bars move with the Core's own level (voice,
+   speech, press), once per drawn frame, and only when it changes. */
+let hudLvl = -1;
+core.onLevel = (a) => {
+  const v = reduced ? 0 : Math.min(1, a * 1.6);
+  if (Math.abs(v - hudLvl) < 0.01) return;
+  hudLvl = v; const s = v.toFixed(3); $("hud").style.setProperty("--lvl", s); $("modeInd").style.setProperty("--lvl", s);
+};
 stage.layout();
 
 state.on((next) => {
@@ -55,6 +67,7 @@ const voice = new Voice({
   onLevel: (a) => core.setAmplitude(a),
   onError: (code, msg) => { if (msg) { stage.setCaption(msg, { quiet: true }); openType(); } },
   onSpeechBoundary: () => core.pulse(0.55),
+  onSpeaking: (on) => { core.setSpeaking(on); document.body.dataset.speaking = on ? "1" : "0"; },
 });
 
 /* --------------------------------------------------------- session --- */
@@ -66,11 +79,11 @@ function newConvo() { return "web-" + REALM.toLowerCase().slice(0, 3) + "-" + Ma
 async function api(method, path, body) {
   try {
     const r = await fetch((CFG.API || "") + path, { method, headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN }, body: body ? JSON.stringify(body) : undefined });
-    const j = await r.json().catch(() => ({ ok: false, message: "ROYAL replied with something unreadable." }));
+    const j = await r.json().catch(() => ({ ok: false, message: serverProblem({ status: r.status }) }));
     if (r.status === 401) { j.ok = false; j.unauthorized = true; }
     if (!r.ok && j.ok === undefined) j.ok = false;
     return j;
-  } catch (_) { return { ok: false, network: true, message: "ROYAL could not be reached. Nothing was done." }; }
+  } catch (_) { return { ok: false, network: true, message: serverProblem({ network: true }) }; }
 }
 
 async function start() {
@@ -94,7 +107,7 @@ async function showSignIn(msg) {
   $("signin").hidden = false; document.body.dataset.auth = "out";
   $("signinStatus").textContent = msg || "";
   const m = await fetch((CFG.API || "") + "/v1/login-methods").then((r) => r.json()).catch(() => null);
-  if (!m) $("signinStatus").textContent = "ROYAL could not be reached. Check your connection and try again.";
+  if (!m) $("signinStatus").textContent = serverProblem({ network: true }).replace(" Nothing was done.", " Then try again.");
   else if (m.passcode === false && !msg) $("signinStatus").textContent = "ROYAL's passcode is not set up yet. In Render, add ROYAL_OWNER_PASSCODE and ROYAL_SESSION_SECRET, then redeploy.";
   $("passcode").focus();
 }
@@ -103,7 +116,7 @@ $("passForm").addEventListener("submit", async (e) => {
   const btn = $("passForm").querySelector("button"); btn.disabled = true;
   $("signinStatus").textContent = "Checking…";
   const r = await fetch((CFG.API || "") + "/v1/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: $("passcode").value }) })
-    .then((x) => x.json()).catch(() => ({ ok: false, message: "ROYAL could not be reached." }));
+    .then((x) => x.json().catch(() => ({ ok: false, message: serverProblem({ status: x.status }) }))).catch(() => ({ ok: false, message: serverProblem({ network: true }) }));
   btn.disabled = false; $("passcode").value = "";
   if (!r.ok) { $("signinStatus").textContent = r.message || "That did not work."; return; }
   store.set("royal.session", r.token); TOKEN = r.token;
@@ -122,7 +135,22 @@ async function enter(st, { firstSignIn = false } = {}) {
   $("wake").focus({ preventScroll: true });
   refreshDecisionMark();
   loadIntelligence();
+  checkBrain(st.provider);
 }
+
+/* ---------------------------------------------------------- notices --- */
+/* A standing, dismissible notice when the AI provider is down, in plain
+   words with the fix.  Dismissed once, it stays away until the cause changes. */
+let noticeKind = null, noticeDismissed = null;
+function checkBrain(provider) {
+  const n = providerNotice(provider), p = providerProblem(provider);
+  if (!n) { noticeKind = null; $("notice").hidden = true; document.body.dataset.notice = "0"; return; }
+  if (noticeDismissed === p.kind) return;
+  noticeKind = p.kind;
+  $("noticeT").textContent = n.title; $("noticeX").textContent = n.text; $("notice").dataset.tone = n.tone; $("notice").hidden = false; document.body.dataset.notice = "1";
+}
+$("noticeClose").addEventListener("click", () => { noticeDismissed = noticeKind; $("notice").hidden = true; document.body.dataset.notice = "0"; });
+async function refreshBrain() { const st = await api("GET", "/v1/status"); if (st.ok) checkBrain(st.provider); }
 
 /* What the intelligence layer can do on this server right now. */
 let INTEL = null, rt = null;
@@ -186,16 +214,28 @@ function greeting() {
 }
 
 async function wake(e) {
+  /* A pointer press already rippled the light on pointerdown (pressStart).
+     A keyboard press (Enter or Space: detail 0) ripples from the Core's
+     centre, not from the screen's top-left corner where its 0,0 would land. */
+  if (e && (e.detail === 0 || !window.PointerEvent)) {
+    const g = core.geometry(); core.touchAt(e.detail ? e.clientX : g.x, e.detail ? e.clientY : g.y);
+    core.press(true); setTimeout(() => core.press(false), 120);   /* the same squeeze and spring as a finger */
+  }
   sound.unlock();
-  if (e && e.clientX !== undefined) core.touchAt(e.clientX, e.clientY);
   if (!TOKEN) return;
   /* Realtime voice, when the server offers it: one touch starts a live
      conversation, the next ends it.  Speaking over ROYAL interrupts it. */
   if (rt && !voice.muted) {
+    /* While a connection is being made, another touch must not open a second
+       one (two microphones, two sockets).  It is ignored until this settles. */
+    if (rtStarting || (rt.ws && !rt.active)) return;
     if (rt.active) { rt.stop(); state.go("AWAKE"); stage.setCaption("Voice off. Touch to talk again.", { quiet: true }); settle(); return; }
     if (state.state === "AMBIENT" || state.state === "OFFLINE") state.go("AWAKE", "touch");
     sound.play("wake"); stage.setHeard(""); stage.setCaption("Listening.", { quiet: true });
-    if (await rt.start()) { bump(); return; }
+    rtStarting = true;
+    let started = false;
+    try { started = await rt.start(); } finally { rtStarting = false; }
+    if (started) { bump(); return; }
     /* fall through to the browser's own speech if realtime could not start */
   }
   if (voice.speaking) { voice.stopSpeaking(); settle(); return; }           /* barge-in */
@@ -213,13 +253,37 @@ async function wake(e) {
 }
 async function listenNow() { if (state.state === "AWAKE" || state.state === "COMPLETE" || state.state === "WARNING" || state.state === "WAITING_FOR_APPROVAL") await voice.listen(); }
 
+/* Press feedback.  The light answers the moment a finger or mouse button
+   lands (pointerdown), instead of waiting for it to lift.  What the press
+   does still runs on click, so the keyboard, screen readers and the
+   browser's rules for starting sound and the microphone are unchanged. */
+let rtStarting = false, lastPointer = "mouse";
+function pressStart(e) {
+  lastPointer = e.pointerType || "mouse";
+  if (!e.isPrimary || e.button > 0) return;
+  if (e.currentTarget === $("core") && !$("sheet").hidden) return;   /* that tap closes the menu */
+  core.touchAt(e.clientX, e.clientY); core.press(true);
+  if (e.pointerType === "touch" || e.pointerType === "pen") sound.tap();
+}
+/* Let go anywhere (or the press is interrupted): the Core springs back. */
+const pressEnd = () => core.press(false);
+["pointerup", "pointercancel", "blur"].forEach((t) => addEventListener(t, pressEnd, { passive: true }));
+document.addEventListener("visibilitychange", pressEnd);
+/* A long press on a phone must not open a text-selection or context menu over the Core. */
+function noHoldMenu(e) { if (lastPointer !== "mouse") e.preventDefault(); }
+for (const id of ["wake", "core"]) { $(id).addEventListener("pointerdown", pressStart, { passive: true }); $(id).addEventListener("contextmenu", noHoldMenu); }
+
 $("wake").addEventListener("click", wake);
 $("core").addEventListener("click", (e) => { if (!$("sheet").hidden) return closeSheet(); wake(e); });
 
 /* ------------------------------------------------------------ typing --- */
-function openType() { $("typebar").hidden = false; document.body.dataset.typing = "1"; $("say").focus(); if (state.state === "AMBIENT") state.go("AWAKE", "typing"); bump(); }
-function closeType() { $("typebar").hidden = true; document.body.dataset.typing = "0"; $("say").blur(); }
-$("kbdBtn").addEventListener("click", () => ($("typebar").hidden ? openType() : closeType()));
+function openType() { unleave($("typebar")); $("typebar").hidden = false; document.body.dataset.typing = "1"; $("say").focus(); if (state.state === "AMBIENT") state.go("AWAKE", "typing"); bump(); }
+function closeType() { if ($("typebar").hidden) return; leave($("typebar")); document.body.dataset.typing = "0"; $("say").blur(); }
+/* Panels leave the way they arrived (a short fade and slide) instead of
+   vanishing; under reduced motion they simply close. */
+function leave(el) { if (el.hidden || el._leaving) return; if (reduced) { el.hidden = true; return; } el.classList.add("leaving"); el._leaving = setTimeout(() => { el.hidden = true; el.classList.remove("leaving"); el._leaving = null; }, 200); }
+function unleave(el) { if (el._leaving) { clearTimeout(el._leaving); el._leaving = null; el.classList.remove("leaving"); } }
+$("kbdBtn").addEventListener("click", () => ($("typebar").hidden || $("typebar")._leaving ? openType() : closeType()));
 $("typebar").addEventListener("submit", (e) => { e.preventDefault(); const t = $("say").value.trim(); if (!t) return; $("say").value = ""; submit(t, "text"); });
 $("say").addEventListener("input", () => { if (voice.speaking) voice.stopSpeaking(); bump(); });
 document.addEventListener("keydown", (e) => {
@@ -256,6 +320,7 @@ async function submit(text, modality, { speak = true } = {}) {
   const res = r.result;
   const v = validateSpec(res.presentation || {});
   const spec = v.ok ? v.spec : null;
+  if (res.status === "FAILED" && /AI brain|PROVIDER_/.test(String(res.summary || ""))) refreshBrain();
   if (!spec) { state.go("FAILURE"); stage.setCaption((res.summary || "") + " (The picture for this answer failed its safety check, so only the words are shown.)", { tone: "attention" }); return settle(); }
 
   /* Specialists that took part: shown only because they did. */
@@ -369,9 +434,9 @@ const bots = new BotsPanel({ root: $("bots"), api, token: () => TOKEN, realm: ()
   onOpen: () => { bump(); closeType(); }, onClose: () => { $("menuBtn").focus({ preventScroll: true }); settle(); } });
 
 /* ------------------------------------------------------------ sheet --- */
-function openSheet(view = "home") { $("sheet").hidden = false; document.body.dataset.menu = "1"; showSheet(view); bump(); }
-function closeSheet() { if ($("sheet").hidden) return; $("sheet").hidden = true; document.body.dataset.menu = "0"; $("menuBtn").focus({ preventScroll: true }); }
-$("menuBtn").addEventListener("click", () => ($("sheet").hidden ? openSheet() : closeSheet()));
+function openSheet(view = "home") { unleave($("sheet")); $("sheet").hidden = false; document.body.dataset.menu = "1"; showSheet(view); bump(); }
+function closeSheet() { if ($("sheet").hidden || $("sheet")._leaving) return; leave($("sheet")); document.body.dataset.menu = "0"; $("menuBtn").focus({ preventScroll: true }); }
+$("menuBtn").addEventListener("click", () => ($("sheet").hidden || $("sheet")._leaving ? openSheet() : closeSheet()));
 $("sheetClose").addEventListener("click", closeSheet);
 
 async function showSheet(view) {
@@ -455,7 +520,9 @@ $("sheetBody").addEventListener("click", async (e) => {
     e.target.disabled = true; $("grokOut").textContent = "Testing…";
     const t = await api("POST", "/v1/provider/test");
     e.target.disabled = false;
-    $("grokOut").textContent = t.ok ? "Grok answered" + (t.model ? " (" + t.model + ")" : "") + (t.latency_ms ? " in " + t.latency_ms + " ms" : "") + "." : "Grok did not answer: " + String(t.detail || t.failed_because || t.message || "unknown").replace(/\.+$/, "") + ".";
+    const why = !t.ok && providerProblem(t);
+    $("grokOut").textContent = t.ok ? "Grok answered" + (t.model ? " (" + t.model + ")" : "") + (t.latency_ms ? " in " + t.latency_ms + " ms" : "") + "." : why ? "Grok did not answer: " + why.why + ". " + why.fix : "Grok did not answer: " + String(t.message || "unknown reason").replace(/\.+$/, "") + ".";
+    refreshBrain();
   }
 });
 $("sheetBody").addEventListener("change", (e) => {
@@ -478,6 +545,11 @@ function switchRealm(r) {
   refreshDecisionMark();
 }
 function applyRealm() { document.body.dataset.realm = REALM; $("realmLbl").textContent = REALM === "PERSONAL" ? "Personal" : "Business"; }
+
+/* ------------------------------------------------------------ clock --- */
+/* A quiet local time in the corner (wide screens), true and nothing more. */
+function tick() { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+tick(); setInterval(tick, 15000);
 
 /* ------------------------------------------------------------- go --- */
 window.addEventListener("error", (e) => { const n = $("fatal"); if (n) { n.hidden = false; n.textContent = "ROYAL hit an error (" + (e.message || "unknown") + "). Reload the page; if it keeps happening, check that every file in web/ is from the same version."; } });

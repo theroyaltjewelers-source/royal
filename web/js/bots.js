@@ -35,7 +35,7 @@ export class BotsPanel {
   async open() {
     this.root.hidden = false; document.body.dataset.bots = "1";
     if (this.onOpen) this.onOpen();
-    this.root.innerHTML = '<div class="bp"><header class="bp-top"><h2 class="bp-title">Bots</h2><p class="bp-sub" id="bpSub"></p>' +
+    this.root.innerHTML = '<div class="bp"><header class="bp-top"><h2 class="bp-title">Bots</h2><p class="bp-sub" id="bpSub"></p><p class="bp-warn" id="bpWarn" role="note" hidden></p>' +
       '<button type="button" class="glyph bp-x" data-close aria-label="Close bots"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>' +
       '<nav class="bp-tabs" role="tablist" aria-label="Bots"></nav><section class="bp-body" aria-live="polite"><p class="bp-note">Loading…</p></section></div>';
     const r = await this.api("GET", "/v1/bots?realm=" + this.realm());
@@ -43,7 +43,10 @@ export class BotsPanel {
     if (!r.ok) { body.innerHTML = '<p class="bp-note err">' + esc(r.message || r.error || "The bots couldn't be loaded.") + "</p>"; return; }
     this.meta = r; this.bots = r.bots || [];
     this.root.querySelector("#bpSub").textContent = (this.realm() === "PERSONAL" ? "Personal · only bots allowed in Personal" : "Business") +
-      (r.enabled ? "" : " · the bridge is switched off on the server") + (r.storage === "TEMPORARY" ? " · history is temporary until a database is attached" : "");
+      (r.enabled ? "" : " · the bridge is switched off on the server");
+    /* Said plainly, where it can't be missed: without a database nothing here survives a restart. */
+    const warn = this.root.querySelector("#bpWarn");
+    if (r.storage === "TEMPORARY") { warn.textContent = "Temporary storage: bot messages and tokens are kept in the server's memory and are erased whenever it restarts or redeploys. Attach a database (DATABASE_URL) to keep them."; warn.hidden = false; }
     if (!this.bots.length) { body.innerHTML = '<p class="bp-note">No bots work in ' + esc(this.realm().toLowerCase()) + ".</p>"; this._tabs(); return; }
     const keep = this.active && this.bots.some((b) => b.id === this.active) ? this.active : this.bots[0].id;
     this.active = null;

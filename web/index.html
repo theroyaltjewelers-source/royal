@@ -23,14 +23,29 @@
 <!-- The touch target over the Core. -->
 <button type="button" id="wake" class="wake" aria-label="Talk to ROYAL" aria-describedby="stateLbl"></button>
 
+<!-- HUD rings around the Core.  Decoration only: they follow the true state
+     (body[data-state]) and the voice level, and are hidden from assistive tech. -->
+<div id="hud" class="hud" aria-hidden="true">
+  <span class="ring holo"></span><span class="ring r1"></span><span class="ring r2"></span>
+  <span class="lv"><span class="ring r3"></span></span><span class="ring scan"></span>
+</div>
+
 <!-- Quiet corner marks.  Nothing else is permanent. -->
 <div class="marks top">
-  <p class="id"><span class="word">ROYAL</span> <span class="sep" aria-hidden="true">·</span> <span id="realmLbl">Business</span> <span class="sep" aria-hidden="true">·</span> <span id="stateLbl">Offline</span></p>
+  <p class="id"><span class="word">ROYAL</span> <span class="sep" aria-hidden="true">·</span> <span id="realmLbl">Business</span> <span class="sep" aria-hidden="true">·</span> <span id="stateLbl">Offline</span><span id="modeInd" class="mode" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></p>
+  <span id="clock" class="clock" aria-hidden="true"></span>
   <button type="button" id="menuBtn" class="glyph" aria-label="Menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 16h14"/></svg><span id="decMark" class="mark-n" hidden></span></button>
 </div>
 <div class="marks bottom">
   <button type="button" id="muteBtn" class="glyph" aria-pressed="false" aria-label="Spoken replies on"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="on" d="M4 10v4h3l4 3V7L7 10H4zM15 9.5a3.5 3.5 0 0 1 0 5M17.5 7a7 7 0 0 1 0 10"/><path class="off" d="M4 10v4h3l4 3V7L7 10H4zM15 10l5 5M20 10l-5 5"/></svg></button>
   <button type="button" id="kbdBtn" class="glyph" aria-label="Type to ROYAL" aria-keyshortcuts="/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M7 11h.01M11 11h.01M15 11h.01M8 14.5h8"/></svg></button>
+</div>
+
+<!-- A standing notice when something ROYAL depends on is down (for example
+     the AI provider).  Dismissible; it names the cause and the fix. -->
+<div id="notice" class="notice" role="status" hidden>
+  <p><b id="noticeT"></b> <span id="noticeX"></span></p>
+  <button type="button" id="noticeClose" class="glyph" aria-label="Dismiss notice"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
 </div>
 
 <!-- Where ROYAL's answer appears: what Tahir said, what ROYAL said, and

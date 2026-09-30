@@ -10,23 +10,24 @@
      converge   particles drawn inward (understanding)
      reach      energy paths extending outward (retrieving, delegating, acting)
      warm       amber introduced (attention); crit = restrained red
-     dim        dormant */
+     dim        dormant
+     think      a slow sweep of light around the edge (THINKING only) */
 
 export const STATES = {
-  OFFLINE:              { energy: 0.18, scale: 0.86, speed: 0.10, coherence: 1.00, corona: 0.55, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 1.0 },
-  AMBIENT:              { energy: 0.62, scale: 1.00, speed: 0.22, coherence: 0.92, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  AWAKE:                { energy: 0.82, scale: 1.06, speed: 0.34, coherence: 0.97, corona: 0.92, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  LISTENING:            { energy: 0.88, scale: 1.04, speed: 0.40, coherence: 0.90, corona: 0.96, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  UNDERSTANDING:        { energy: 0.92, scale: 0.96, speed: 0.55, coherence: 0.95, corona: 0.80, converge: 1.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  THINKING:             { energy: 0.96, scale: 0.98, speed: 0.95, coherence: 0.80, corona: 0.88, converge: 0.4, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  RETRIEVING:           { energy: 0.94, scale: 1.00, speed: 0.80, coherence: 0.85, corona: 1.05, converge: 0.0, reach: 0.7, warm: 0.0, crit: 0.0, dim: 0.0 },
-  DELEGATING:           { energy: 0.98, scale: 1.00, speed: 0.85, coherence: 0.88, corona: 1.10, converge: 0.0, reach: 1.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  ACTING:               { energy: 1.00, scale: 1.02, speed: 1.00, coherence: 0.90, corona: 1.15, converge: 0.0, reach: 1.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  WAITING_FOR_APPROVAL: { energy: 0.74, scale: 1.00, speed: 0.12, coherence: 1.00, corona: 0.90, converge: 0.0, reach: 0.0, warm: 0.35, crit: 0.0, dim: 0.0 },
-  RESPONDING:           { energy: 0.90, scale: 1.02, speed: 0.45, coherence: 0.94, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  COMPLETE:             { energy: 1.00, scale: 0.98, speed: 0.30, coherence: 1.00, corona: 0.85, converge: 0.6, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0 },
-  WARNING:              { energy: 0.84, scale: 1.00, speed: 0.35, coherence: 0.90, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.85, crit: 0.0, dim: 0.0 },
-  FAILURE:              { energy: 0.50, scale: 0.94, speed: 0.18, coherence: 0.96, corona: 0.70, converge: 0.0, reach: 0.0, warm: 0.2, crit: 0.55, dim: 0.2 },
+  OFFLINE:              { energy: 0.18, scale: 0.86, speed: 0.10, coherence: 1.00, corona: 0.55, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 1.0, think: 0.0 },
+  AMBIENT:              { energy: 0.62, scale: 1.00, speed: 0.22, coherence: 0.92, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  AWAKE:                { energy: 0.82, scale: 1.06, speed: 0.34, coherence: 0.97, corona: 0.92, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  LISTENING:            { energy: 0.88, scale: 1.04, speed: 0.40, coherence: 0.90, corona: 0.96, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  UNDERSTANDING:        { energy: 0.92, scale: 0.96, speed: 0.55, coherence: 0.95, corona: 0.80, converge: 1.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  THINKING:             { energy: 0.96, scale: 0.98, speed: 0.95, coherence: 0.80, corona: 0.88, converge: 0.4, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 1.0 },
+  RETRIEVING:           { energy: 0.94, scale: 1.00, speed: 0.80, coherence: 0.85, corona: 1.05, converge: 0.0, reach: 0.7, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  DELEGATING:           { energy: 0.98, scale: 1.00, speed: 0.85, coherence: 0.88, corona: 1.10, converge: 0.0, reach: 1.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  ACTING:               { energy: 1.00, scale: 1.02, speed: 1.00, coherence: 0.90, corona: 1.15, converge: 0.0, reach: 1.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  WAITING_FOR_APPROVAL: { energy: 0.74, scale: 1.00, speed: 0.12, coherence: 1.00, corona: 0.90, converge: 0.0, reach: 0.0, warm: 0.35, crit: 0.0, dim: 0.0, think: 0.0 },
+  RESPONDING:           { energy: 0.90, scale: 1.02, speed: 0.45, coherence: 0.94, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  COMPLETE:             { energy: 1.00, scale: 0.98, speed: 0.30, coherence: 1.00, corona: 0.85, converge: 0.6, reach: 0.0, warm: 0.0, crit: 0.0, dim: 0.0, think: 0.0 },
+  WARNING:              { energy: 0.84, scale: 1.00, speed: 0.35, coherence: 0.90, corona: 1.00, converge: 0.0, reach: 0.0, warm: 0.85, crit: 0.0, dim: 0.0, think: 0.0 },
+  FAILURE:              { energy: 0.50, scale: 0.94, speed: 0.18, coherence: 0.96, corona: 0.70, converge: 0.0, reach: 0.0, warm: 0.2, crit: 0.55, dim: 0.2, think: 0.0 },
 };
 
 /* Legal transitions.  Anything else is a bug and is refused (and logged),

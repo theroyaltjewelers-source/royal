@@ -22,9 +22,22 @@ export class Sound {
     this.ac = null;
   }
   setEnabled(v) { this.enabled = !!v; try { localStorage.setItem("royal.sound", v ? "1" : "0"); } catch (_) {} }
-  unlock() { if (this.ac) return; const AC = window.AudioContext || window.webkitAudioContext; if (AC) { try { this.ac = new AC(); } catch (_) { this.ac = null; } } }
+  /* Also wakes a context the browser suspended (a phone call, the app in the
+     background), so the wake cue is not silently lost on the next touch. */
+  unlock() { if (this.ac) { if (this.ac.state === "suspended" || this.ac.state === "interrupted") { try { const p = this.ac.resume(); if (p && p.catch) p.catch(() => {}); } catch (_) {} } return; } const AC = window.AudioContext || window.webkitAudioContext; if (AC) { try { this.ac = new AC(); } catch (_) { this.ac = null; } } }
+  /* A very short tap the moment a finger presses the Core.  Only where the
+     device can vibrate, never under reduced motion, and only once the page
+     has been touched (browsers refuse vibration before that anyway). */
+  tap() {
+    if (this.reduced || !navigator.vibrate) return false;
+    const ua = navigator.userActivation; if (ua && !ua.hasBeenActive) return false;
+    try { navigator.vibrate(6); } catch (_) { return false; }
+    this.tapAt = Date.now(); return true;
+  }
   play(name) {
-    if (BUZZ[name] && navigator.vibrate && !this.reduced) { try { navigator.vibrate(BUZZ[name]); } catch (_) {} }
+    /* the wake buzz right after a press tap would feel like a double knock */
+    const justTapped = name === "wake" && Date.now() - (this.tapAt || 0) < 700;
+    if (BUZZ[name] && navigator.vibrate && !this.reduced && !justTapped) { try { navigator.vibrate(BUZZ[name]); } catch (_) {} }
     if (!this.enabled || !this.ac || !CUES[name]) return;
     const t0 = this.ac.currentTime + 0.01;
     for (const [f, at, dur] of CUES[name]) {
