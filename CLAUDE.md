@@ -1,0 +1,43 @@
+# ROYAL: working notes
+
+Read this before changing anything.
+
+## The rules that are not negotiable
+
+**ROYAL is not the database.** Operational facts come from connectors, with an evidence label, a source and an age. Nothing a model says, and nothing in conversation memory, is a business fact.
+
+**Authority lives in `core/permissions.js`.** A prompt can explain a rule; only code enforces one. A new tool is added to `TOOL_POLICY` with its class and reversibility, or it does not exist.
+
+**Approval is a resolved Decision by an owner.** Never silence, never a model's say-so, never a spoken "yes".
+
+**No fake functionality.** An unconnected domain, tool or provider says NOT CONNECTED and draws no conclusion. There is a test for that; keep it passing.
+
+**The calculator's rules stay in the calculator.** ROYAL never recomputes price, margin, value or runway. It reads what the House API sends.
+
+**Realms do not mix.** Business specialists cannot read personal domains. Tahir & Co. is not Royal T.
+
+**No secrets anywhere but the server environment.** Not in `web/`, not in logs, not in model prompts, not in responses.
+
+## How a change is made here
+
+(a) Zero runtime dependencies. ES modules. No bundler. No build step.
+
+(b) Every behaviour has a test in `tests/`. Run `npm test`. With a calculator checkout, run `RTJ_CALCULATOR_DIR=../royal-t node --test tests/` so the contract and embed-copy checks run too.
+
+(c) A change to `web/royal-embed.js` must be copied to the calculator's `unified/royal-embed.js`. The embed test fails if the copies differ.
+
+(d) A change to the House API contract needs a new contract id (`rtj.house.v2`), a matching calculator build script, and a passing contract test.
+
+(e) A material architectural choice gets an ADR in `docs/architecture/DECISIONS.md`.
+
+(f) House writing style for docs and copy: no em dashes, prose-forward, lettered clauses in policy documents.
+
+## What is known to be wrong or missing
+
+(a) Stores: memory and JSON file only. Multi-instance needs the Postgres store.
+
+(b) ROYAL refreshes only while a signed-in calculator is open (ADR-002).
+
+(c) Waiting times are measured from the last edit and labelled INFERENCE, until the calculator records stage timestamps.
+
+(d) No correction store, no evaluation job, no scheduler, and no personal-realm connectors yet.

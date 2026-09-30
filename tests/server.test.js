@@ -1,0 +1,106 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHandler, supabaseAuth, fromEnv } from "../server/handler.js";
+import { createRoyal } from "../core/royal.js";
+import { MemoryStore } from "../core/store.js";
+import { GrokProvider } from "../core/providers/grok.js";
+import { house } from "./fixtures.js";
+
+const USERS = { "t-owner": { id: "u-tahir", role: "owner" }, "t-staff": { id: "u-staff", role: "none" }, "t-member": { id: "u-tori", role: "member" } };
+function app(extra = {}) {
+  const royal = createRoyal({ store: new MemoryStore(), provider: new GrokProvider({ apiKey: "xai-SECRETSECRETSECRET1234", model: "grok-test", fetchImpl: async () => ({ ok: false, status: 500 }) }) });
+  const handler = createHandler({ royal, auth: async (t) => USERS[t] || null, allowedOrigins: ["https://royal-t-9e9.pages.dev"], ...extra });
+  const call = (method, path, { token = "t-owner", body, origin, raw } = {}) => handler(new Request("https://royal.test" + path, {
+    method, headers: { ...(token ? { Authorization: "Bearer " + token } : {}), ...(origin ? { Origin: origin } : {}), "Content-Type": "application/json" },
+    body: raw !== undefined ? raw : body ? JSON.stringify(body) : undefined }));
+  return { royal, call };
+}
+
+test("health is public and says nothing else", async () => {
+  const r = await app().call("GET", "/v1/health", { token: null });
+  assert.equal(r.status, 200); assert.deepEqual(Object.keys(await r.json()).sort(), ["ok", "service", "version"]);
+});
+test("every other route needs a signed-in owner", async () => {
+  const { call } = app();
+  assert.equal((await call("GET", "/v1/status", { token: null })).status, 401);
+  assert.equal((await call("GET", "/v1/status", { token: "forged" })).status, 401);
+  assert.equal((await call("GET", "/v1/decisions", { token: "t-staff" })).status, 403);
+  assert.equal((await call("POST", "/v1/command", { token: "t-staff", body: { content: "What needs me?" } })).status, 403);
+  assert.equal((await call("POST", "/v1/ingest/calculator", { token: "t-staff", body: { snapshot: house() } })).status, 403);
+});
+test("an identity outage refuses rather than lets anyone in", async () => {
+  const royal = createRoyal({ store: new MemoryStore() });
+  const h = createHandler({ royal, auth: async () => { throw new Error("down"); } });
+  const r = await h(new Request("https://royal.test/v1/status", { headers: { Authorization: "Bearer x" } }));
+  assert.equal(r.status, 503);
+});
+test("ingest then ask, end to end", async () => {
+  const { call } = app();
+  const i = await call("POST", "/v1/ingest/calculator", { body: { snapshot: house() } });
+  assert.equal(i.status, 200);
+  const r = await (await call("POST", "/v1/command", { body: { content: "Who owes us money?" } })).json();
+  assert.equal(r.ok, true); assert.equal(r.result.skill, "who_owes_us"); assert.ok(r.result.findings.length > 0);
+});
+test("an invalid snapshot is refused with reasons", async () => {
+  const { call } = app();
+  const r = await call("POST", "/v1/ingest/calculator", { body: { snapshot: { contract: "nope" } } });
+  assert.equal(r.status, 422); assert.ok((await r.json()).errors.length > 0);
+});
+test("malformed and oversized bodies are refused", async () => {
+  const { call } = app();
+  assert.equal((await call("POST", "/v1/command", { raw: "{not json" })).status, 400);
+  assert.equal((await call("POST", "/v1/command", { raw: JSON.stringify({ content: "x".repeat(6 * 1024 * 1024) }) })).status, 413);
+});
+test("decisions resolve through the API as the signed-in owner", async () => {
+  const { call, royal } = app();
+  const { decision } = await royal.decisions.create({ type: "GENERAL", title: "Approve the thing", requested_by_agent: "royal" });
+  const r = await (await call("POST", "/v1/decisions/" + decision.id + "/resolve", { body: { resolution: "REJECT" } })).json();
+  assert.equal(r.decision.status, "REJECTED"); assert.equal(r.decision.resolved_by, "u-tahir");
+  const again = await call("POST", "/v1/decisions/" + decision.id + "/resolve", { body: { resolution: "APPROVE" } });
+  assert.equal(again.status, 409); assert.equal((await again.json()).failed_because, "ALREADY_REJECTED");
+});
+test("CORS is granted only to allowed origins", async () => {
+  const { call } = app();
+  const ok = await call("GET", "/v1/status", { origin: "https://royal-t-9e9.pages.dev" });
+  assert.equal(ok.headers.get("access-control-allow-origin"), "https://royal-t-9e9.pages.dev");
+  const bad = await call("GET", "/v1/status", { origin: "https://evil.example" });
+  assert.equal(bad.headers.get("access-control-allow-origin"), null);
+});
+test("no response ever carries the provider key", async () => {
+  const { call } = app();
+  await call("POST", "/v1/ingest/calculator", { body: { snapshot: house() } });
+  for (const [m, p, b] of [["GET", "/v1/status"], ["GET", "/v1/agents"], ["POST", "/v1/command", { content: "Is the calculator connected?" }],
+    ["POST", "/v1/command", { content: "What would a wise jeweller do this quarter?" }], ["GET", "/v1/developer/log"], ["GET", "/v1/activity"]]) {
+    const t = await (await call(m, p, { body: b })).text();
+    assert.ok(!/SECRETSECRET/.test(t), p + " leaked the key");
+  }
+});
+test("supabase auth maps only listed ids to owner", async () => {
+  const fetchImpl = async (u, o) => ({ ok: true, status: 200, json: async () => ({ id: o.headers.Authorization === "Bearer a" ? "u-tahir" : "u-other" }) });
+  const auth = supabaseAuth({ url: "https://x.supabase.co", anonKey: "anon", ownerIds: ["u-tahir"], fetchImpl });
+  assert.equal((await auth("a")).role, "owner"); assert.equal((await auth("b")).role, "none");
+  const down = supabaseAuth({ url: "https://x.supabase.co", anonKey: "anon", fetchImpl: async () => ({ ok: false, status: 503 }) });
+  await assert.rejects(() => down("a"));
+});
+test("the development token is refused in production", async () => {
+  await assert.rejects(() => fromEnv({ ROYAL_DEV_OWNER_TOKEN: "x", ROYAL_ENV: "production" }, { store: new MemoryStore() }), /must not be set in production/);
+});
+
+test("a house member may send calculator state and nothing else", async () => {
+  const { call } = app();
+  assert.equal((await call("POST", "/v1/ingest/calculator", { token: "t-member", body: { snapshot: house() } })).status, 200);
+  assert.equal((await call("POST", "/v1/command", { token: "t-member", body: { content: "Who owes us money?" } })).status, 403);
+  assert.equal((await call("GET", "/v1/decisions", { token: "t-member" })).status, 403);
+  assert.equal((await call("GET", "/v1/activity", { token: "t-member" })).status, 403);
+});
+test("the file store is written owner-readable only", async () => {
+  const { fileStore } = await import("../core/store.js");
+  const { statSync, rmSync } = await import("node:fs");
+  const path = "/tmp/royal-store-test-" + process.pid + ".json";
+  const s = await fileStore(path);
+  await s.put("tasks", "t1", { a: 1 }, null);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  const again = await fileStore(path);
+  assert.equal((await again.get("tasks", "t1")).data.a, 1, "survives a restart");
+  rmSync(path);
+});

@@ -1,0 +1,12 @@
+{
+  "name": "royal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ROYAL: the unified intelligence and command layer for Tahir's business and personal realms.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "node server/node.js"
+  }
+}
