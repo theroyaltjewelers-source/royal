@@ -43,11 +43,7 @@
 </section>
 
 <main id="main" hidden>
-  <form class="command" id="command" role="search" aria-label="Ask ROYAL">
-    <label for="ask" class="sr">Ask ROYAL anything</label>
-    <input id="ask" type="text" autocomplete="off" placeholder="Ask ROYAL anything…" enterkeyhint="send" maxlength="2000">
-    <button type="submit" class="primary" aria-label="Ask">Ask</button>
-  </form>
+
   <div class="chips" id="chips" aria-label="Suggested commands"></div>
   <div class="working" id="working" aria-live="polite" hidden></div>
 
@@ -67,6 +63,14 @@
   <section class="view" id="view-agents" hidden></section>
   <section class="view" id="view-systems" hidden></section>
 </main>
+
+<form class="command dock" id="command" role="search" aria-label="Command ROYAL" hidden>
+  <button type="button" class="mic" id="mic" hidden aria-label="Speak a command" title="Speak a command. Your browser's speech service turns it into text."><span class="micdot" aria-hidden="true"></span><span id="micLabel">SPEAK</span></button>
+  <label for="ask" class="sr">Command ROYAL</label>
+  <input id="ask" type="text" autocomplete="off" placeholder="Type a command…" enterkeyhint="send" maxlength="2000">
+  <button type="submit" class="primary" aria-label="Send">Ask</button>
+  <span class="dockstat" id="dockStat"><span class="dot" aria-hidden="true"></span><span id="dockStatText">HOUSE</span></span>
+</form>
 
 <dialog id="modify" aria-labelledby="modifyTitle">
   <form method="dialog" id="modifyForm">

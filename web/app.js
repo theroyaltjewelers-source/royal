@@ -96,7 +96,7 @@ const SUGGEST = { BUSINESS: ["What needs me?", "State of the House", "Can I step
   PERSONAL: ["What's on my calendar tomorrow?", "My wealth", "My personal tasks"] };
 
 function start(st) {
-  $("signin").hidden = true; $("main").hidden = false; $("signOut").hidden = false;
+  $("signin").hidden = true; $("main").hidden = false; $("signOut").hidden = false; $("command").hidden = false;
   window.__prov = st.provider || {};
   applyRealm();
   renderConn(st);
@@ -190,6 +190,54 @@ function item(i, big) {
 const list = (items, empty, more, askq) => items && items.length ? '<ul class="items">' + items.map((x, n) => item(x, n === 0 && x.priority === "P1")).join("") + "</ul>" +
   (more ? '<p class="more"><button type="button" class="link" data-q="' + esc(askq || "What needs me?") + '">' + more + " more</button></p>" : "") : '<p class="empty">' + esc(empty || "Nothing here.") + "</p>";
 
+/* The network in the middle of the command center: ROYAL at the centre, the
+   specialists above, the connected systems below.  A lit node is working, an
+   amber one has something for you, a dim dashed one is not connected. */
+function orb(s) {
+  const W = 600, H = 250, cx = 300, cy = 128;
+  const up = s.agents || [], down = s.systems || [];
+  const upPos = up.map((_, i) => [cx + (i - (up.length - 1) / 2) * 130, 40 + Math.abs(i - (up.length - 1) / 2) * 22]);
+  const dnPos = down.map((_, i) => [cx + (i - (down.length - 1) / 2) * Math.min(120, 520 / Math.max(1, down.length - 1 || 1)), 222]);
+  const cls = (st) => st === "ok" || st === true ? "on" : st === "attention" ? "warn" : "off";
+  let g = "";
+  up.forEach((a, i) => { const [x, y] = upPos[i]; g += '<line class="ln ' + cls(a.state) + '" x1="' + cx + '" y1="' + cy + '" x2="' + x + '" y2="' + y + '"/>'; });
+  down.forEach((d, i) => { const [x, y] = dnPos[i]; g += '<line class="ln ' + cls(d.on) + '" x1="' + cx + '" y1="' + cy + '" x2="' + x + '" y2="' + y + '"/>'; });
+  up.forEach((a, i) => { const [x, y] = upPos[i]; g += '<circle class="nd ' + cls(a.state) + '" cx="' + x + '" cy="' + y + '" r="9"/><text x="' + x + '" y="' + (y - 16) + '">' + esc(a.name) + "</text>"; });
+  down.forEach((d, i) => { const [x, y] = dnPos[i]; g += '<circle class="nd ' + cls(d.on) + '" cx="' + x + '" cy="' + y + '" r="7"/><text x="' + x + '" y="' + (y + 22) + '">' + esc(d.name.toUpperCase()) + "</text>"; });
+  const label = "ROYAL, " + (s.connected || 0) + " of " + (s.total || 0) + " systems connected" + (up.length ? ", specialists: " + up.map((a) => a.name + " " + a.state).join(", ") : "");
+  return '<svg class="orb" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(label) + '">' + g +
+    '<circle class="core-ring" cx="' + cx + '" cy="' + cy + '" r="30"/><circle class="core" cx="' + cx + '" cy="' + cy + '" r="11"/></svg>';
+}
+function setDock(level) {
+  const st = $("dockStat"); st.className = "dockstat lvl-" + (level || "NOMINAL");
+  $("dockStatText").textContent = (REALM === "PERSONAL" ? "PERSONAL" : "HOUSE") + " " + ({ NOMINAL: "NOMINAL", ATTENTION: "ATTENTION", ALERT: "ALERT", OFFLINE: "OFFLINE" }[level] || "");
+}
+function tick() {
+  const c = document.getElementById("ccClock");
+  if (c) c.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+setInterval(tick, 20000);
+
+/* Voice goes into the same command path as typing.  "LISTENING" shows only
+   while the microphone is actually on. */
+(function voice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  $("mic").hidden = false;
+  let rec = null;
+  $("mic").addEventListener("click", () => {
+    if (rec) { rec.stop(); return; }
+    rec = new SR(); rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1;
+    let finalText = "";
+    rec.onstart = () => { $("mic").classList.add("listening"); $("micLabel").textContent = "LISTENING"; };
+    rec.onresult = (e) => { let t = ""; for (const r of e.results) { t += r[0].transcript; if (r.isFinal) finalText = t; } $("ask").value = t; };
+    rec.onerror = (e) => { $("micLabel").textContent = e.error === "not-allowed" ? "MIC BLOCKED" : "SPEAK"; };
+    rec.onend = () => { $("mic").classList.remove("listening"); if ($("micLabel").textContent === "LISTENING") $("micLabel").textContent = "SPEAK"; rec = null;
+      if (finalText.trim()) { ask(finalText.trim()); $("ask").value = ""; } };
+    rec.start();
+  });
+})();
+
 const SURFACES = {
   text: (s) => (s.label ? '<p class="evline">' + evidence({ label: s.label }) + "</p>" : "") +
     (s.based_on && s.based_on.length ? '<details class="basis"><summary>Based on</summary><ul>' + s.based_on.map((f) => "<li>" + esc(f.text) + "</li>").join("") + "</ul></details>" : "") +
@@ -221,6 +269,20 @@ const SURFACES = {
       "<h4>Unknown</h4><ul class=\"facts unknown\">" + a.unknown.map((u) => "<li>" + esc(u) + "</li>").join("") + "</ul>" +
       (s.items.length ? "<h4>Open items</h4>" + list(s.items) : "") + (s.decisions.length ? "<h4>Decisions</h4>" + s.decisions.map(decisionCard).join("") : "") + "</div>"; },
   clarify: (s) => '<ul class="pick">' + s.candidates.map((c) => '<li><button type="button" class="chip" data-q="status of ' + esc(c.id) + '">' + esc((c.client_name || "") + " · " + (c.name || "") + " · " + c.stage) + "</button></li>").join("") + "</ul>",
+  command_center: (s) => {
+    const lvl = s.level || "NOMINAL";
+    const lvlText = { NOMINAL: "NOMINAL", ATTENTION: "ATTENTION", ALERT: "ALERT", OFFLINE: "NOT CONNECTED" }[lvl];
+    return '<section class="cc lvl-' + esc(lvl) + '" aria-label="ROYAL command center">' +
+      '<header class="cc-top"><span class="cc-title">ROYAL <span>//</span> ' + (s.realm === "PERSONAL" ? "PERSONAL" : "ONLINE") + '</span>' +
+      '<span class="cc-stat">' + (s.realm === "PERSONAL" ? "PERSONAL" : "HOUSE") + ' <span class="dot" aria-hidden="true"></span> ' + esc(lvlText) + "</span></header>" +
+      '<div class="cc-sub"><time id="ccClock"></time><span>' + esc(s.connected) + " OF " + esc(s.total) + " SYSTEMS CONNECTED</span></div>" +
+      orb(s) +
+      '<p class="cc-name">ROYAL</p><p class="cc-head">' + esc(s.headline) + '</p><p class="cc-prompt">' + esc(s.prompt) + "</p>" +
+      (s.metrics ? '<div class="cc-metrics">' + s.metrics.map((m) => '<button type="button" class="cc-m" data-q="' + esc(m.q) + '"><span class="k">' + esc(m.k) + '</span><span class="v">' + esc(m.v) + '</span><span class="s">' + esc(m.sub) + "</span></button>").join("") + "</div>" : "") +
+      (s.top && s.top.length ? '<div class="cc-top3"><p class="kicker">Needs you first</p>' + list(s.top) + '<p class="more"><button type="button" class="link" data-q="What needs me?">Everything that needs you</button> · <button type="button" class="link" data-q="Get me ready for tomorrow">Full briefing</button></p></div>' : "") +
+      '<details class="cc-sys"><summary>Systems</summary><dl class="lines">' + s.systems.map((x) => "<div><dt>" + esc(x.name) + "</dt><dd>" + esc(x.on ? "Connected" + (x.detail && x.detail !== "connected" ? ", " + x.detail : "") : "Not connected") + "</dd></div>").join("") + "</dl></details>" +
+      "</section>";
+  },
   personal_home: (s) => '<div class="nc"><p class="kicker">Your personal side</p><dl class="lines">' + s.domains.map((d) => "<div><dt>" + esc(d.name) + "</dt><dd>" + esc(d.status === "CONNECTED" ? "Connected" : "Not connected yet") + "</dd></div>").join("") +
     '</dl><p class="quiet">Nothing from the business appears here, and nothing personal appears on the Business side.</p></div>',
   realm_switch: (s) => '<p><button type="button" class="primary" data-realm-go="' + esc(s.to) + '">Go to ' + (s.to === "PERSONAL" ? "Personal" : "Business") + "</button></p>",
@@ -276,10 +338,12 @@ function showView(v) {
 }
 
 async function loadHome() {
-  const r = await api("POST", "/v1/command", { skill: REALM === "PERSONAL" ? "personal" : "morning_briefing", content: "Home", realm: REALM, conversation_id: CONVO + "-home", modality: "ui_action" });
+  const r = await api("POST", "/v1/command", { skill: "command_center", content: "Home", realm: REALM, conversation_id: CONVO + "-home", modality: "ui_action" });
   const el = $("view-home");
   if (!r.ok) { el.innerHTML = '<p class="err">' + esc(r.message) + "</p>"; return; }
-  el.innerHTML = '<p class="summary home">' + esc(r.result.summary) + "</p>" + SURFACES[r.result.surface.type](r.result.surface, r.result);
+  const surf = r.result.surface || { type: "text" };
+  el.innerHTML = surf.type === "command_center" ? SURFACES.command_center(surf) : '<p class="summary home">' + esc(r.result.summary) + "</p>" + (SURFACES[surf.type] || SURFACES.text)(surf, r.result);
+  setDock(surf.level); tick();
   if (r.result.connection) renderConn({ calculator: r.result.connection, provider: window.__prov || {} });
 }
 async function loadDecisionCount() {

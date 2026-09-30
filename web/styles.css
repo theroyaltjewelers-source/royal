@@ -57,7 +57,7 @@ main,.signin{max-width:1120px;margin:0 auto;padding:var(--s5) var(--s4) 96px}
 .dev{margin-top:var(--s5)}
 
 /* ---- command */
-.command{display:grid;grid-template-columns:1fr auto;gap:var(--s2);position:sticky;top:96px;z-index:4;background:var(--bg);padding:var(--s2) 0}
+.command{display:grid;grid-template-columns:1fr auto;gap:var(--s2);background:var(--bg);padding:var(--s2) 0}
 .command input{font-size:17px;padding:var(--s3) var(--s4);min-height:52px;border-color:var(--edge);background:var(--panel)}
 .command input:focus{border-color:var(--limeEdge)}
 .command input:focus-visible,input:focus-visible,textarea:focus-visible{outline:1px solid var(--limeEdge);outline-offset:0}
@@ -190,9 +190,6 @@ dialog form{display:grid;gap:var(--s2)} dialog .row{display:flex;gap:var(--s2);j
   .dgrid{grid-template-columns:repeat(4,1fr)}
   .dact{grid-template-columns:repeat(3,auto) 1fr;justify-content:start}
   .dact .link{grid-column:auto;justify-self:end}
-  #view-home{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:0 var(--s6)}
-  #view-home>.summary{grid-column:1/-1}
-  #view-home>.bsec#b-decisions{grid-column:2;grid-row:2/span 8}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
@@ -200,3 +197,49 @@ dialog form{display:grid;gap:var(--s2)} dialog .row{display:flex;gap:var(--s2);j
 body.realm-personal{--lime:#9cc3e6;--limeDim:rgba(156,195,230,.10);--limeEdge:rgba(156,195,230,.45);--ink-on-lime:#070808}
 body.realm-personal .bar{border-bottom-color:rgba(156,195,230,.35)}
 .realmtag{color:var(--lime);letter-spacing:.12em;font-size:var(--t-xs)}
+
+/* ---- command dock: always at the bottom, where a thumb reaches */
+main{padding-bottom:140px}
+.dock{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:6;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:var(--s2);
+  padding:var(--s3) var(--s4) calc(var(--s3) + env(safe-area-inset-bottom,0px));background:rgba(7,8,8,.96);border-top:1px solid var(--line);backdrop-filter:blur(8px)}
+.dock input{min-height:48px;font-size:16px;letter-spacing:.02em}
+.dock .mic{display:inline-flex;align-items:center;gap:8px;min-height:48px;background:none;border:1px solid var(--edge);color:var(--muted);font-size:var(--t-xs);letter-spacing:.14em}
+.dock .mic[hidden]{display:none!important}
+.micdot{width:10px;height:10px;border-radius:50%;border:2px solid currentColor}
+.mic.listening{color:var(--lime);border-color:var(--limeEdge)}
+.mic.listening .micdot{background:var(--lime);animation:pulse 1s ease-in-out infinite}
+.dockstat{display:none;font-size:var(--t-xs);letter-spacing:.14em;color:var(--muted);align-items:center;gap:6px}
+.dockstat .dot,.cc-stat .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.lvl-NOMINAL .dot{background:var(--gain)} .lvl-ATTENTION .dot{background:var(--amber)} .lvl-ALERT .dot{background:var(--alert)} .lvl-OFFLINE .dot{background:var(--faint)}
+@media (min-width:760px){ .dock{grid-template-columns:auto 1fr auto auto;left:50%;transform:translateX(-50%);max-width:1120px;border:1px solid var(--line);border-bottom:none} .dockstat{display:inline-flex} }
+
+/* ---- command center */
+.cc{border:1px solid var(--edge);background:linear-gradient(180deg,var(--panel),var(--bg));padding:var(--s4);margin:var(--s3) 0 var(--s5);position:relative}
+.cc-top,.cc-sub{display:flex;justify-content:space-between;align-items:center;gap:var(--s3);font-size:var(--t-xs);letter-spacing:.16em;color:var(--muted);font-variant-numeric:tabular-nums}
+.cc-title{color:var(--text)} .cc-title span{color:var(--lime)}
+.cc-stat{display:inline-flex;align-items:center;gap:6px;color:var(--text)}
+.cc-sub{margin-top:6px;color:var(--faint)}
+.orb{display:block;width:100%;max-width:640px;margin:var(--s4) auto 0;overflow:visible}
+.orb .ln{stroke-width:1.2} .orb .ln.on{stroke:var(--limeEdge)} .orb .ln.warn{stroke:rgba(255,194,77,.6)} .orb .ln.off{stroke:var(--edge);stroke-dasharray:3 5}
+.orb .nd{stroke-width:1.5} .orb .nd.on{fill:var(--limeDim);stroke:var(--lime)} .orb .nd.warn{fill:var(--amberDim);stroke:var(--amber)} .orb .nd.off{fill:none;stroke:var(--edge);stroke-dasharray:2 3}
+.orb text{fill:var(--muted);font:500 10px var(--sans);letter-spacing:.14em;text-anchor:middle}
+.orb .core{fill:var(--lime)} .orb .core-ring{fill:none;stroke:var(--limeEdge);stroke-width:1.5}
+.lvl-OFFLINE .orb .core{fill:var(--faint)} .lvl-OFFLINE .orb .core-ring{stroke:var(--edge)}
+.lvl-ATTENTION .orb .core-ring{stroke:var(--amber)} .lvl-ALERT .orb .core-ring{stroke:var(--alert)}
+@media (prefers-reduced-motion:no-preference){ .lvl-ALERT .orb .core-ring,.lvl-ATTENTION .orb .core-ring{animation:breathe 2.4s ease-in-out infinite} }
+@keyframes breathe{50%{stroke-opacity:.35}}
+.cc-name{text-align:center;font-family:var(--serif);letter-spacing:.42em;font-size:var(--t-lg);margin:var(--s2) 0 var(--s4);padding-left:.42em}
+.cc-head{text-align:center;font-family:var(--serif);font-size:var(--t-xl);margin:0}
+.lvl-ALERT .cc-head{color:var(--alert)}
+.cc-prompt{text-align:center;color:var(--muted);margin:6px 0 var(--s5)}
+.cc-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}
+.cc-m{display:flex;flex-direction:column;align-items:center;gap:2px;background:var(--panel);border:none;border-radius:0;padding:var(--s4) var(--s2);min-height:auto}
+.cc-m:hover{background:var(--hover)}
+.cc-m .k{font-size:var(--t-xs);letter-spacing:.16em;color:var(--muted)}
+.cc-m .v{font-family:var(--serif);font-size:clamp(22px,6vw,31px);white-space:nowrap;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.2}
+.cc-m .s{font-size:var(--t-xs);color:var(--faint)}
+.cc-top3{margin-top:var(--s5)} .cc-sys{margin-top:var(--s4);font-size:var(--t-sm);color:var(--muted)}
+@media (min-width:760px){ .cc{padding:var(--s5) var(--s6)} .cc-head{font-size:var(--t-2xl)} }
+/* On a phone the command center is the screen: the header chips and the
+   suggestion row give way to it (the metrics and the dock do their job). */
+@media (max-width:759px){ .conn{display:none} #chips{display:none} .views{margin-top:var(--s2)} .signout{grid-column:2} }

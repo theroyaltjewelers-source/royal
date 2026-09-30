@@ -52,6 +52,68 @@ function decisionItems(ds) {
 export const SKILLS = {};
 function skill(m, run) { SKILLS[m.id] = { ...m, run }; }
 
+/* -------------------------------------------------------- home status --- */
+/* The command screen's header: one word for the House, the systems that are
+   really connected, and three counts.  Every number comes from the same
+   specialists as every other answer; nothing here is decorative. */
+skill(meta("home_status", "Home Status", ALL, { purpose: "The command screen: House status, systems, and the three counts." }), async (ctx) => {
+  const { results, findings } = await gather(ctx, ALL);
+  const ds = await openDecisions(ctx);
+  const domains = ctx.domains.filter((d) => d.realm === "BUSINESS");
+  const provider = ctx.provider.status();
+  const systems = domains.map((d) => ({ name: d.name, connected: d.status === "CONNECTED" }))
+    .concat([{ name: "Language (Grok)", connected: provider.status === "CONNECTED" }]);
+  const agents = Object.values(results).map((r) => ({ id: r.agent, ok: r.status === RUN_STATUS.OK, status: r.status }));
+  if (notConnected(results)) return { status: RUN_STATUS.NOT_CONNECTED, summary: "No business data yet: the calculator is not connected.",
+    findings: [], surface: { type: "home", house: "NO DATA", needs: ds.length, clients_attention: null, projects_active: null, money_outstanding: null, systems, agents } };
+  const need = needsTahir(findings).concat(decisionItems(ds));
+  const house = need.some((i) => i.priority === P.P0) ? "CRITICAL" : need.some((i) => i.priority === P.P1) ? "ATTENTION" : "NOMINAL";
+  const clients = new Set(need.filter((i) => i.entity && (i.entity.client_id || i.entity.client_name)).map((i) => i.entity.client_id || i.entity.client_name));
+  const act = await ctx.read("grace", "get_active_projects");
+  const active = act.ok ? act.data.filter((p) => ["Delivered", "Archived"].indexOf(p.stage) < 0).length : null;
+  return { summary: house === "NOMINAL" ? "All systems operational." : plural(need.length, "matter needs", "matters need") + " you.",
+    findings: need.slice(0, 3),
+    surface: { type: "home", house, needs: need.length, clients_attention: clients.size, projects_active: active,
+      money_outstanding: results.ledger.data.receivable, systems, agents, top: need.slice(0, 3) } };
+});
+
+/* ---------------------------------------------------- command center --- */
+/* The home screen.  Every figure and every light is computed from verified
+   state; nothing is decorative.  When something cannot be seen, it says so. */
+skill(meta("command_center", "Command Center", ALL, { purpose: "The home screen: House status, systems, and the three numbers that matter." }), async (ctx) => {
+  const { results, findings } = await gather(ctx, ALL);
+  const dsRaw = await openDecisions(ctx);
+  const calc = await ctx.connector.status(ctx.now);
+  const prov = ctx.provider.status();
+  const doms = ctx.domains.filter((d) => d.realm === "BUSINESS");
+  const systems = [{ id: "calculator", name: "Calculator", on: !!calc.connected, detail: calc.connected ? calc.age : "not connected" },
+    { id: "language", name: "Grok", on: prov.status === "CONNECTED", detail: prov.status === "CONNECTED" ? "connected" : "not connected" }]
+    .concat(doms.filter((d) => d.id !== "royal_t").map((d) => ({ id: d.id, name: d.name, on: d.status === "CONNECTED", detail: d.status === "CONNECTED" ? "connected" : "not connected" })));
+  const agents = ["ace", "grace", "ledger", "forge"].map((id) => {
+    const r = results[id] || {};
+    const items = (r.findings || []).filter((f) => f.need && f.need !== N.NONE);
+    return { id, name: id.toUpperCase(), state: r.status === RUN_STATUS.OK ? (items.some((f) => f.priority === P.P0 || f.priority === P.P1) ? "attention" : "ok") : "off", items: items.length };
+  });
+  const base = { type: "command_center", realm: "BUSINESS", systems, connected: systems.filter((x) => x.on).length, total: systems.length, agents, decisions: dsRaw.length };
+  if (notConnected(results))
+    return { status: RUN_STATUS.NOT_CONNECTED, summary: "I can't see the House yet. The calculator isn't connected.", findings: [],
+      surface: { ...base, level: "OFFLINE", headline: "I can't see the House yet.", prompt: "Open the calculator signed in, and I'll connect.", metrics: null } };
+  const ex = executive(findings), need = needsTahir(findings).concat(decisionItems(dsRaw)).sort(byAttention);
+  const alert = ex.some((i) => i.priority === P.P0 || i.risk === R.BLACK);
+  const level = alert ? "ALERT" : need.length ? "ATTENTION" : "NOMINAL";
+  const clients = new Set(ex.filter((i) => i.entity && i.entity.client_name && ([R.ORANGE, R.RED, R.BLACK].indexOf(i.risk) >= 0 || [N.DO, N.DECIDE].indexOf(i.need) >= 0)).map((i) => i.entity.client_id || i.entity.client_name));
+  const latest = await ctx.connector.latest();
+  const active = latest.snapshot.projects.filter((p) => !p.archived && !p.deleted && ["Delivered", "Archived"].indexOf(p.stage) < 0).length;
+  const L = results.ledger.data;
+  const headline = level === "NOMINAL" ? "All systems operational." : level === "ALERT" ? "Something needs you now." : plural(need.length, "thing needs", "things need") + " you.";
+  return { summary: headline, findings: need.slice(0, 5),
+    surface: { ...base, level, headline, prompt: "What do you need?", top: need.slice(0, 3),
+      metrics: [{ k: "CLIENTS", v: String(clients.size).padStart(2, "0"), sub: "need attention", q: "Which clients are at risk?" },
+                { k: "PROJECTS", v: String(active).padStart(2, "0"), sub: "active", q: "What's happening with production?" },
+                { k: "MONEY", v: L.receivable >= 1000 ? "$" + (L.receivable / 1000).toFixed(1) + "K" : money(L.receivable), sub: "expected", q: "Who owes us money?" }],
+      age: calc.age } };
+});
+
 /* ------------------------------------------------------ what needs me --- */
 skill(meta("what_needs_me", "Executive Triage", ALL, { purpose: "What needs Tahir, in order, and nothing that does not." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
@@ -336,7 +398,11 @@ skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own doma
   const connected = ds.filter((d) => d.status === "CONNECTED");
   return { status: connected.length ? RUN_STATUS.OK : RUN_STATUS.NOT_CONNECTED,
     summary: connected.length ? "Personal: " + connected.map((d) => d.name).join(", ") + " connected." : "Nothing personal is connected yet. ROYAL won't guess at your calendar, wealth or tasks, and your business records are never used here.",
-    findings: [], surface: { type: "personal_home", realm: "PERSONAL", domains: ds } };
+    findings: [], surface: { type: "command_center", realm: "PERSONAL", level: connected.length ? "NOMINAL" : "OFFLINE",
+      headline: connected.length ? "Personal systems online." : "Nothing personal is connected yet.",
+      prompt: connected.length ? "What do you need?" : "Tell me what to connect first: calendar, tasks or wealth.",
+      systems: ds.map((d) => ({ id: d.id, name: d.name, on: d.status === "CONNECTED", detail: d.status === "CONNECTED" ? "connected" : "not connected" })),
+      connected: connected.length, total: ds.length, agents: [], decisions: 0, metrics: null, domains: ds } };
 });
 skill(meta("other_business", "Other Business Lines", [], { purpose: "Tahir & Co. and Gold Buy." }), async (ctx) => {
   const ds = ctx.domains.filter((d) => ["tahir_and_co", "gold_buy"].indexOf(d.id) >= 0);
