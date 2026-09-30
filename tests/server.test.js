@@ -192,3 +192,41 @@ test("boot reports only true states", async () => {
   const ag = await (await call("GET", "/v1/agents")).json();
   assert.equal(ag.agents.find((a) => a.id === "house").health, "NOT_CONNECTED");
 });
+
+/* ------------------------------------------------ intelligence routes --- */
+
+test("intelligence routes: owner only, and no key in any of them", async () => {
+  const { call } = app();
+  for (const p of ["/v1/intelligence/status", "/v1/tools", "/v1/agents/tasks", "/v1/developer/metrics", "/v1/knowledge/search?q=deposit"]) {
+    assert.equal((await call("GET", p, { token: null })).status, 401, p);
+    assert.equal((await call("GET", p, { token: "t-staff" })).status, 403, p);
+    const r = await call("GET", p);
+    assert.equal(r.status, 200, p);
+    const text = await r.text();
+    assert.ok(!/xai-SECRET|SECRETSECRET/.test(text), "a key leaked from " + p);
+  }
+  const st = await (await call("GET", "/v1/intelligence/status")).json();
+  assert.ok(["NOT_CONFIGURED", "DISABLED", "CONNECTED"].indexOf(st.research.status) >= 0);
+  assert.equal(st.sending, "DISABLED", "external sending is off by default");
+  const tools = (await (await call("GET", "/v1/tools")).json()).tools;
+  assert.ok(tools.find((t) => t.id === "send_email").permission_level === "APPROVAL_REQUIRED");
+  assert.equal((await call("GET", "/v1/knowledge/search")).status, 400, "a query is required");
+});
+
+test("voice session: off by default, Business only, and only a short-lived token ever leaves", async () => {
+  const off = app();
+  assert.equal((await off.call("POST", "/v1/voice/session")).status, 409);
+  const fetchImpl = async (u) => (/client_secrets/.test(String(u))
+    ? new Response(JSON.stringify({ value: "ek_short_lived", expires_at: 1790000000 }), { status: 200 }) : new Response("{}", { status: 500 }));
+  const royal = createRoyal({ store: new MemoryStore(), flags: { realtime_voice: true },
+    provider: new GrokProvider({ apiKey: "xai-SECRETSECRETSECRET1234", model: "grok-test", fetchImpl }) });
+  const h = createHandler({ royal, auth: async (t) => USERS[t] || null });
+  const call = (path) => h(new Request("https://royal.test" + path, { method: "POST", headers: { Authorization: "Bearer t-owner" } }));
+  const personal = await call("/v1/voice/session?realm=PERSONAL");
+  assert.equal(personal.status, 409); assert.equal((await personal.json()).error, "VOICE_BUSINESS_ONLY");
+  const ok = await call("/v1/voice/session?realm=BUSINESS");
+  const text = await ok.text();
+  assert.equal(ok.status, 200, text);
+  assert.ok(!/SECRETSECRET/.test(text), "the API key never reaches the browser");
+  assert.match(text, /ek_short_lived/);
+});

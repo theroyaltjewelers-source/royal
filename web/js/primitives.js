@@ -15,7 +15,19 @@ export const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(Number(n)
 
 const RISK = { GREEN: "Healthy", YELLOW: "Watch", ORANGE: "At risk", RED: "Serious", BLACK: "Critical" };
 const NEED = { KNOW: "For you to know", DECIDE: "Needs your decision", APPROVE: "Needs your approval", DO: "Needs action", DELEGATE: "Can be delegated", MONITOR: "Watching", NONE: "" };
-const LABEL = { VERIFIED: "Verified", REPORTED_UNVERIFIED: "Reported, not verified", INFERENCE: "Inferred", RECOMMENDATION: "Recommendation", UNKNOWN: "Unknown" };
+const LABEL = { VERIFIED: "Verified", VERIFIED_INTERNAL: "Verified in House records", VERIFIED_EXTERNAL: "Verified at the source", REPORTED_UNVERIFIED: "Reported, not verified",
+  MODEL_KNOWLEDGE: "General knowledge, not checked", INFERENCE: "Inferred", RECOMMENDATION: "Recommendation", UNKNOWN: "Unknown" };
+const EMAIL = { PUBLICLY_LISTED: "Published by the company", PROVIDER_FOUND: "Found by a provider, not verified", PATTERN_INFERRED: "Guessed from the company's pattern, not verified",
+  VERIFIED_DELIVERABLE: "Verified deliverable", LIKELY_DELIVERABLE: "Likely deliverable (pattern)", RISKY: "Risky", INVALID: "Invalid, do not use", UNVERIFIED: "Not verified", NOT_FOUND: "Not found" };
+const CONF = { HIGH: "high confidence", MEDIUM: "medium confidence", LOW: "low confidence", NONE: "no support" };
+const safeUrl = (u) => (/^https?:\/\/[^\s"'<>]+$/i.test(String(u || "")) ? String(u) : null);
+function src(x) {
+  const u = safeUrl(x.url), label = esc(x.title || x.domain);
+  return '<li class="src' + (x.confirmed ? " ok" : "") + '">' + (u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer nofollow">' + label + "</a>" : label) +
+    ' <span>' + esc(x.domain) + (x.kind ? " · " + esc(String(x.kind).replace(/_/g, " ")) : "") + (x.retrieved ? " · read " + esc(x.retrieved) : "") + (x.confirmed ? " · confirmed by ROYAL" : "") + "</span></li>";
+}
+function sources(list, title = "Sources") { return list && list.length ? '<details class="srcs"><summary>' + esc(title) + " (" + list.length + ")</summary><ul>" + list.map(src).join("") + "</ul></details>" : ""; }
+function claimLi(c) { return '<li class="claim">' + esc(c.text) + ev({ label: c.label, note: [c.confidence ? CONF[c.confidence] || c.confidence : null].filter(Boolean).join("") }) + sources(c.sources, "Sources") + "</li>"; }
 const KIND = { RISK_OBJECT: "Attention", RECEIVABLE_OBJECT: "Money owed", COMMITMENT_OBJECT: "Promise", WAITING_OBJECT: "Waiting", LEAD_OBJECT: "Lead" };
 
 function ev(e) {
@@ -98,6 +110,9 @@ const R = {
   SYSTEM_HEALTH: (d) => '<article class="obj sys"><p class="eyebrow">Systems</p><ul>' + (d.systems || []).map((s) => '<li class="' + (s.on ? "on" : "off") + '"><i aria-hidden="true"></i><span>' + esc(s.name) + "</span><em>" + esc(s.on ? (s.detail || "Connected") : "Not connected") + "</em></li>").join("") + "</ul></article>",
 
   MESSAGE_VIEW: (d) => '<article class="obj msg"><p class="eyebrow">Draft' + (d.by ? " by " + esc(d.by) : "") + " · to " + esc(d.to) + " · nothing sent</p>" +
+    (d.address || d.subject ? '<dl class="dec-g">' + (d.address ? "<div><dt>Address</dt><dd>" + esc(d.address) + (d.address_status ? ' <span class="hint">' + esc(EMAIL[d.address_status] || d.address_status) + "</span>" : "") + "</dd></div>" : "<div><dt>Address</dt><dd>None yet</dd></div>") +
+      (d.subject ? "<div><dt>Subject</dt><dd>" + esc(d.subject) + "</dd></div>" : "") + "</dl>" : "") +
+    (d.method === "template" ? '<p class="hint">Written from a template; the language provider is not connected.</p>' : "") +
     '<div class="msg-b">' + esc(d.body).replace(/\n/g, "<br>") + "</div>" + ev({ label: d.label || "RECOMMENDATION", note: d.purpose }) +
     '<p class="follow"><button type="button" class="act approve" data-q="Send it">Send it</button><span class="hint">Sending asks for your approval first.</span></p></article>',
 
@@ -111,6 +126,40 @@ const R = {
 
   ERROR_OBJECT: (d) => '<article class="obj err"><p class="eyebrow">Couldn\'t complete</p><dl class="dec-g"><div><dt>Attempted</dt><dd>' + esc(d.attempted) + "</dd></div><div><dt>Why it failed</dt><dd>" + esc(d.failed_because) + "</dd></div>" +
     (d.impact ? "<div><dt>Impact</dt><dd>" + esc(d.impact) + "</dd></div>" : "") + (d.next_action ? "<div><dt>Next</dt><dd>" + esc(d.next_action) + "</dd></div>" : "") + "</dl></article>",
+
+  RESEARCH_OBJECT: (d) => '<article class="obj research"><p class="eyebrow">Research · ' + esc(CONF[d.confidence] || d.confidence) + (d.retrieved ? " · " + esc(d.retrieved) : "") + (d.note ? " · " + esc(d.note) : "") + "</p>" +
+    '<p class="stmt-t">' + esc(d.answer) + "</p>" +
+    (d.conflicts.length ? '<div class="dec-l unk"><b>Sources disagree</b><ul>' + d.conflicts.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul></div>" : "") +
+    (d.claims.length ? '<ul class="claims">' + d.claims.map(claimLi).join("") + "</ul>" : "") +
+    (d.unknowns.length ? '<details class="unk"><summary>What I couldn\'t establish</summary><ul>' + d.unknowns.map((u) => "<li>" + esc(u) + "</li>").join("") + "</ul></details>" : "") +
+    sources(d.sources, "All sources") + '<p class="follow"><button type="button" class="lnk" data-q="Where did you get that?">Where did you get that?</button></p></article>',
+
+  PERSON_OBJECT: (d) => '<article class="obj person"><p class="eyebrow">' + esc([d.role, d.company, d.domain].filter(Boolean).join(" · ")) + "</p>" +
+    (d.name ? '<h2 class="entity-t">' + esc(d.name) + '</h2><p class="entity-s"><span class="stage">' + esc(d.title || "") + "</span>" + (d.since ? '<span class="due">since ' + esc(d.since) + "</span>" : "") + "</p>" : '<h3 class="obj-t">No one confirmed in the role</h3>') +
+    ev({ label: d.label, note: [d.confidence ? CONF[d.confidence] : null, d.confirmed_on ? "confirmed on " + d.confirmed_on : null].filter(Boolean).join(" · ") }) +
+    (d.conflict ? '<div class="dec-l unk"><b>Sources disagree</b><p class="det">' + esc(d.conflict) + "</p></div>" : "") +
+    (d.email || d.email_status ? '<dl class="dec-g"><div><dt>Business email</dt><dd>' + esc(d.email || "Not found") + (d.email_status ? ' <span class="hint">' + esc(EMAIL[d.email_status] || d.email_status) + "</span>" : "") + "</dd></div></dl>" +
+      (d.email_note ? '<p class="hint">' + esc(d.email_note) + "</p>" : "") : "") +
+    (d.others.length ? '<details class="unk"><summary>Also found</summary><ul>' + d.others.map((o) => "<li><b>" + esc(o.name) + "</b> " + esc(o.title) + (o.note ? " · " + esc(o.note) : "") + "</li>").join("") + "</ul></details>" : "") +
+    sources(d.sources) +
+    (d.name ? '<p class="follow">' + (d.email ? "" : '<button type="button" class="lnk" data-q="Find their business email">Business email</button>') + '<button type="button" class="lnk" data-q="Have ACE write an introduction">Have ACE write an introduction</button><button type="button" class="lnk" data-q="Where did you get that?">Sources</button></p>' : "") + "</article>",
+
+  KNOWLEDGE_OBJECT: (d) => '<article class="obj knowledge"><p class="eyebrow">House knowledge</p>' + (d.answer ? '<p class="stmt-t">' + esc(d.answer) + "</p>" + ev({ label: d.label, note: "drawn from the passages below" }) : "") +
+    '<ul class="passages">' + d.passages.map((p) => '<li><p class="cite">' + esc(p.citation) + (p.binding === false ? ' <span class="rk rk-ORANGE"><i aria-hidden="true"></i>not decided policy</span>' : p.binding ? ' <span class="rk rk-GREEN"><i aria-hidden="true"></i>active policy</span>' : "") +
+      (p.synthetic ? ' <span class="hint">training case</span>' : "") + '</p><p class="det">' + esc(p.text).replace(/\*\*/g, "") + "</p></li>").join("") + "</ul>" +
+    (d.unknowns.length ? '<details class="unk"><summary>Not covered</summary><ul>' + d.unknowns.map((u) => "<li>" + esc(u) + "</li>").join("") + "</ul></details>" : "") + "</article>",
+
+  PROSPECT_LIST: (d) => '<article class="obj prospects"><p class="eyebrow">Prospects · ' + esc(d.items.length) + "</p><ol>" + d.items.map((i) => "<li><b>" + esc(i.company) + "</b>" + (i.domain ? ' <span class="hint">' + esc(i.domain) + "</span>" : "") +
+    (i.why ? '<p class="det">' + esc(i.why) + "</p>" : "") + (i.person ? '<p class="next"><b>Contact</b> ' + esc(i.person) + (i.title ? ", " + esc(i.title) : "") + "</p>" : "") + ev({ label: i.label }) + sources(i.sources) + "</li>").join("") +
+    '</ol><p class="hint">' + esc(d.note) + "</p></article>",
+
+  PLAN_OBJECT: (d) => '<article class="obj plan"><p class="eyebrow">Plan</p><h3 class="obj-t">' + esc(d.goal) + '</h3><ol class="plan-s">' + d.steps.map((x) => '<li class="' + (x.available ? "" : "off") + '">' + esc(x.text) +
+    (x.requires === "approval" ? ' <span class="rk rk-ORANGE"><i aria-hidden="true"></i>needs your approval</span>' : "") + (x.available ? "" : ' <span class="hint">not available yet</span>') + "</li>").join("") + "</ol></article>",
+
+  SOURCE_LIST: (d) => '<article class="obj srclist"><p class="eyebrow">Sources</p>' + (d.claims.length ? '<ul class="claims">' + d.claims.map(claimLi).join("") + "</ul>" : "") +
+    '<ul class="srcs-open">' + d.sources.map(src).join("") + "</ul></article>",
+
+  TASK_OBJECT: (d) => '<article class="obj task"><p class="eyebrow">Delegated to ' + esc(d.agent) + (d.created ? " · " + esc(d.created) : "") + '</p><p class="det">' + esc(d.objective) + '</p><p class="hint">Status: ' + esc(String(d.status).toLowerCase().replace(/_/g, " ")) + "</p></article>",
 
   UNKNOWN_OBJECT: (d) => '<article class="obj unkobj"><p class="det">' + esc(d.text) + "</p></article>",
 };

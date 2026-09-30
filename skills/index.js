@@ -10,7 +10,7 @@
 
 import { PRIORITY as P, RISK as R, NEED as N, EVIDENCE as E, RUN_STATUS, COMMITMENT_STATUS as CS, DECISION_STATUS as DS } from "../core/enums.js";
 import { executive, needsTahir, byAttention } from "../core/attention.js";
-import { money, plural, daysBetween, parseDate } from "../core/util.js";
+import { money, plural, daysBetween, parseDate, stableHash } from "../core/util.js";
 import { diffSnapshots } from "../realms/business/royal-t/changes.js";
 import { draftFor } from "./drafts.js";
 
@@ -441,9 +441,12 @@ skill(meta("send_pending", "Send the Draft", [], { purpose: "Send the message un
     decision: { title: "Send " + pd.purpose + " to " + pd.client_name, description: pd.body, related_project_id: pd.project_id, related_client_id: pd.client_id,
       priority: P.P2, risk: R.YELLOW, recommended_option: "APPROVE", reasoning_summary: "Prepared by " + pd.agent.toUpperCase() + " from verified calculator state. It states no new date or price.",
       facts: ["Prepared in this conversation at your request."], unknowns: ["Whether the client has been contacted outside ROYAL"],
-      financial_impact: pd.amount || null, expected_result: "The client receives this message.", source: "calculator", dedupe_key: "send:" + pd.project_id + ":" + pd.body.length + ":" + pd.purpose } });
+      financial_impact: pd.amount || null, expected_result: "The client receives this message.", source: "calculator", dedupe_key: "send:" + pd.project_id + ":" + stableHash([pd.purpose, pd.body]) } });
   if (r.status !== "PENDING_APPROVAL")
     return { status: RUN_STATUS.OK, summary: "I can't send that: " + (r.reason || r.status) + ". Nothing was sent.", findings: [], surface: { type: "text" } };
+  if (r.already_decided)
+    return { summary: "That exact message was already " + (["EXECUTED", "VERIFIED"].indexOf(r.decision.status) >= 0 ? "sent" : "approved") + ". I won't send it twice.",
+      findings: [], pending_draft: null, surface: { type: "decision_pending", decision: r.decision } };
   const canSend = ctx.flags && ctx.flags.agent_external_send && ctx.messenger;
   return { summary: "That's a message to a client, so it needs your approval. It's in front of you now." +
       (canSend ? "" : " Sending isn't connected yet: when you approve, the approval is recorded and someone on the team sends it."),

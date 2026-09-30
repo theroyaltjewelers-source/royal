@@ -21,6 +21,7 @@ import { Sound } from "./sound.js";
 import { validateSpec } from "./schema.js";
 import { esc } from "./primitives.js";
 import { BotsPanel } from "./bots.js";
+import { RealtimeVoice } from "./realtime.js";
 
 const CFG = window.ROYAL_CONFIG || {};
 const $ = (id) => document.getElementById(id);
@@ -120,6 +121,31 @@ async function enter(st, { firstSignIn = false } = {}) {
   stage.setCaption(REALM === "PERSONAL" ? "Personal. Touch to talk." : "Touch to talk.", { quiet: true });
   $("wake").focus({ preventScroll: true });
   refreshDecisionMark();
+  loadIntelligence();
+}
+
+/* What the intelligence layer can do on this server right now. */
+let INTEL = null, rt = null;
+async function loadIntelligence() {
+  const r = await api("GET", "/v1/intelligence/status");
+  INTEL = r.ok ? r : null;
+  if (INTEL && INTEL.realtime_voice === "AVAILABLE" && !rt) {
+    rt = new RealtimeVoice({ api, ask: askFromVoice, realm: () => REALM,
+      onState: (s) => {
+        document.body.dataset.rt = s;
+        if (s === "live" || s === "listening") { if (state.state !== "LISTENING" && !busy) state.go("LISTENING"); }
+        else if (s === "speaking") { if (state.state !== "RESPONDING") state.go("RESPONDING"); }
+        else if (s === "disconnected") { stage.setCaption("The voice connection closed. Your conversation is kept; touch to reconnect, or type.", { quiet: true }); state.go("AWAKE"); settle(); }
+      },
+      onHeard: (t, final) => { stage.setHeard(t); bump(); },
+      onSaid: (t) => stage.setCaption(t),
+      onLevel: (a) => { core.setAmplitude(a); core.pulse(a * 0.6); },
+      onError: (m) => { stage.setCaption(m, { quiet: true }); } });
+  }
+}
+async function askFromVoice(text) {
+  for (let i = 0; i < 40 && busy; i++) await wait(250);
+  return submit(text, "voice", { speak: false });
 }
 
 function offline() {
@@ -163,6 +189,15 @@ async function wake(e) {
   sound.unlock();
   if (e && e.clientX !== undefined) core.touchAt(e.clientX, e.clientY);
   if (!TOKEN) return;
+  /* Realtime voice, when the server offers it: one touch starts a live
+     conversation, the next ends it.  Speaking over ROYAL interrupts it. */
+  if (rt && !voice.muted) {
+    if (rt.active) { rt.stop(); state.go("AWAKE"); stage.setCaption("Voice off. Touch to talk again.", { quiet: true }); settle(); return; }
+    if (state.state === "AMBIENT" || state.state === "OFFLINE") state.go("AWAKE", "touch");
+    sound.play("wake"); stage.setHeard(""); stage.setCaption("Listening.", { quiet: true });
+    if (await rt.start()) { bump(); return; }
+    /* fall through to the browser's own speech if realtime could not start */
+  }
   if (voice.speaking) { voice.stopSpeaking(); settle(); return; }           /* barge-in */
   if (state.state === "LISTENING") { voice.cancel(); state.go("AWAKE"); settle(); return; }
   if (busy) return;
@@ -198,7 +233,7 @@ document.addEventListener("keydown", (e) => {
 
 /* ------------------------------------------------------------ submit --- */
 let busy = false;
-async function submit(text, modality) {
+async function submit(text, modality, { speak = true } = {}) {
   if (busy) return; busy = true;
   voice.stopSpeaking(); voice.cancel(); sound.unlock();
   stage.setHeard(text); bump();
@@ -235,7 +270,9 @@ async function submit(text, modality) {
   stage.setCaption(spec.speech || res.summary || "", { tone: spec.tone });
   if (res.skill === "clear") stage.setHeard("");
   const done = () => finish(spec, res);
-  if (!voice.speak(spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
+  /* With realtime voice on, the voice says it; the browser stays quiet. */
+  if (!speak || (rt && rt.active) || !voice.speak(spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
+  return res;
 }
 
 function finish(spec, res) {
@@ -385,10 +422,25 @@ async function showSheet(view) {
     const lines = r.lines || [];
     body.innerHTML = back + '<h2 class="sb-t">Systems</h2><ul class="sb-sys">' + lines.map((l) => '<li class="' + (l.ok ? "ok" : "no") + '"><span>' + esc(l.k) + "</span><em>" + esc(l.v) + (l.detail ? " · " + esc(l.detail) : "") + "</em></li>").join("") + "</ul>" +
       '<div class="sb-row"><button type="button" class="act" id="testGrok">Test Grok</button><span id="grokOut" class="sb-note" role="status"></span></div>' +
+      intelLines() +
       '<p class="sb-h">Rendering</p><div class="seg" role="group" aria-label="Quality">' + ["HIGH", "MEDIUM", "LOW"].map((t) => '<button type="button" data-tier="' + t + '" aria-pressed="' + (core.tierName === t) + '">' + t[0] + t.slice(1).toLowerCase() + "</button>").join("") + "</div>" +
       '<p class="sb-note">Renderer: ' + esc(core.mode === "webgl" ? "WebGL" : core.mode === "2d" ? "2D fallback" : "none") + (reduced ? " · reduced motion" : "") + "</p>" +
       '<ul class="sb-list"><li><button type="button" id="replayBoot">Replay start-up</button></li></ul>';
   }
+}
+
+function intelLines() {
+  const i = INTEL; if (!i) return "";
+  const row = (k, v, ok) => '<li class="' + (ok ? "ok" : "no") + '"><span>' + esc(k) + "</span><em>" + esc(v) + "</em></li>";
+  const word = (x) => String(x || "unknown").toLowerCase().replace(/_/g, " ");
+  return '<p class="sb-h">Intelligence</p><ul class="sb-sys">' +
+    row("WEB RESEARCH", word(i.research.status) + (i.research.detail ? " · " + i.research.detail : ""), i.research.status === "CONNECTED") +
+    row("HOUSE KNOWLEDGE", i.knowledge.status === "CONNECTED" ? i.knowledge.documents + " documents · " + i.knowledge.passages + " passages" : word(i.knowledge.status), i.knowledge.status === "CONNECTED") +
+    row("CONTACT DISCOVERY", word(i.contacts.discovery), i.contacts.discovery === "CONNECTED") +
+    row("EMAIL VERIFICATION", word(i.contacts.verification), i.contacts.verification === "CONNECTED") +
+    row("EMAIL SENDING", word(i.email.status) + " · " + word(i.sending), i.email.status === "CONNECTED" && i.sending === "ENABLED") +
+    row("REALTIME VOICE", word(i.realtime_voice), i.realtime_voice === "AVAILABLE") +
+    row("GROK BOT AGENTS", word(i.agent_orchestration), i.agent_orchestration === "ENABLED") + "</ul>";
 }
 
 $("sheetBody").addEventListener("click", async (e) => {
@@ -419,6 +471,8 @@ function switchRealm(r) {
   REALM = r; store.set("royal.realm", r); CONVO = newConvo();
   stage.history = []; stage.clear(); stage.setHeard("");
   bots.reset();
+  /* A live voice conversation belongs to the room it started in. */
+  if (rt && rt.active) rt.stop();
   applyRealm();
   stage.setCaption(r === "PERSONAL" ? "Personal. Nothing from the business comes in here." : "Business.", { quiet: true });
   refreshDecisionMark();

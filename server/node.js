@@ -11,6 +11,7 @@ import { GrokProvider } from "../core/providers/grok.js";
 import { UnavailableProvider } from "../core/providers/provider.js";
 import { bridgeFromEnv } from "../core/grokbot/bridge.js";
 import { nodeAdapter } from "./node-adapter.js";
+import { intelligenceFromEnv } from "./intelligence-env.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
@@ -25,20 +26,24 @@ async function staticFiles(path) {
     const buf = await readFile(file);
     return new Response(buf, { headers: { "Content-Type": TYPES[extname(file)] || "application/octet-stream", "Cache-Control": "no-cache",
       "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Permissions-Policy": "microphone=(self), camera=(), geolocation=()",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https:; img-src 'self' data:; frame-ancestors 'self' " + (process.env.ROYAL_ALLOWED_ORIGINS || "").split(",").join(" ") } });
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https: wss://api.x.ai; img-src 'self' data:; frame-ancestors 'self' " + (process.env.ROYAL_ALLOWED_ORIGINS || "").split(",").join(" ") } });
   } catch { return null; }
 }
 
 const env = process.env;
 const store = env.ROYAL_STORE_PATH ? await fileStore(env.ROYAL_STORE_PATH) : new MemoryStore();
 if (!env.ROYAL_STORE_PATH) console.warn("ROYAL: ROYAL_STORE_PATH is not set; decisions and audit are in memory and will be lost on restart.");
-const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
-  store,
-  providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
-});
 /* The Grok Bot bridge: Postgres when DATABASE_URL is set (migrations run on
    start unless ROYAL_AUTO_MIGRATE=false), memory otherwise. */
 const bridge = await bridgeFromEnv(env, { migrationsDir: join(ROOT, "server", "migrations") });
+/* The intelligence layer's parts: House knowledge, safe fetching, contact
+   providers, email, metrics.  Each reports NOT CONFIGURED without its key. */
+const intel = await intelligenceFromEnv(env, { docsDir: join(ROOT, "docs") });
+const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
+  store, extras: { ...intel, bridge },
+  providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL, fastModel: e.ROYAL_GROK_FAST_MODEL,
+    voiceModel: e.ROYAL_VOICE_MODEL || "grok-voice-latest", voice: e.ROYAL_VOICE || "eve", metrics: intel.metrics }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
+});
 const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles });
 
 const server = http.createServer(nodeAdapter(handler));

@@ -215,6 +215,31 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
         return json(req, 200, t);
       }
       if (req.method === "GET" && path === "/v1/developer/log") return json(req, 200, { ok: true, log: await royal.audit.developerLog({ limit: 500 }) });
+      /* ------------------------------------------------ intelligence --- */
+      if (req.method === "GET" && path === "/v1/intelligence/status")
+        return json(req, 200, { ok: true, ...royal.intelligence.status(), integrations: await royal.gateway.describe(), flags: royal.flags });
+      if (req.method === "GET" && path === "/v1/tools") return json(req, 200, { ok: true, tools: royal.tools() });
+      if (req.method === "GET" && path === "/v1/agents/tasks") return json(req, 200, { ok: true, tasks: await royal.intelligence.tasks.list({}) });
+      if (req.method === "GET" && path === "/v1/developer/metrics") return json(req, 200, { ok: true, metrics: royal.metrics ? royal.metrics.snapshot() : null });
+      if (req.method === "GET" && path === "/v1/knowledge/search") {
+        const q = String(url.searchParams.get("q") || "").slice(0, 300);
+        if (!q.trim()) return fail(req, 400, "QUERY_REQUIRED", "Add ?q=");
+        return json(req, 200, { ok: true, results: royal.intelligence.status().knowledge.status === "CONNECTED" ? (await royal.intelligence.toolImpls.knowledge_search({ query: q })).data : [] });
+      }
+      if (req.method === "POST" && path === "/v1/voice/session") {
+        /* A short-lived token for the realtime voice WebSocket.  The API key
+           stays here; the browser gets a token that expires in minutes. */
+        if (!royal.flags.realtime_voice) return fail(req, 409, "VOICE_DISABLED", "Realtime voice is switched off (realtime_voice).");
+        /* The realtime voice model hears the conversation; it is offered for
+           Business only, so nothing from the Personal side reaches it. */
+        if (realmQ === "PERSONAL") return fail(req, 409, "VOICE_BUSINESS_ONLY", "Realtime voice is available on the Business side only. The browser's own speech works in Personal.");
+        if (!royal.provider.voiceSession || !(royal.provider.capabilities && royal.provider.capabilities().realtime_voice))
+          return fail(req, 409, "VOICE_NOT_CONFIGURED", "Realtime voice needs XAI_API_KEY on the server.");
+        const v = await royal.provider.voiceSession({ seconds: 600 });
+        if (!v.ok) return json(req, 502, { ok: false, error: v.failed_because, message: "The voice service did not issue a session" + (v.detail ? ": " + v.detail : ".") });
+        await royal.audit.record({ actor: "tahir", action: "VOICE_SESSION", summary: "Started a realtime voice session." });
+        return json(req, 200, { ok: true, token: v.token, expires_at: v.expires_at, ws_url: v.ws_url, model: v.model, session: voiceSessionConfig(v.voice) });
+      }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
         return json(req, 200, { ok: true, decisions: await royal.decisions.list({ status, realm: realmQ }) });
@@ -271,10 +296,10 @@ export function supabaseAuth({ url, anonKey, ownerIds = [], memberIds = [], fetc
 }
 
 /* Build ROYAL from environment variables.  Used by every entry file. */
-export async function fromEnv(env, { store, providerFactory } = {}) {
+export async function fromEnv(env, { store, providerFactory, extras = {} } = {}) {
   const flags = env.ROYAL_FLAGS ? JSON.parse(env.ROYAL_FLAGS) : {};
   const provider = providerFactory ? providerFactory(env) : undefined;
-  const royal = createRoyal({ store, provider, flags, tzOffsetMin: env.ROYAL_TZ_OFFSET_MIN ? Number(env.ROYAL_TZ_OFFSET_MIN) : -240 });
+  const royal = createRoyal({ store, provider, flags, tzOffsetMin: env.ROYAL_TZ_OFFSET_MIN ? Number(env.ROYAL_TZ_OFFSET_MIN) : -240, ...extras });
   const ownerIds = String(env.ROYAL_OWNER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   const memberIds = String(env.ROYAL_MEMBER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   let auth = supabaseAuth({ url: env.ROYAL_IDENTITY_URL, anonKey: env.ROYAL_IDENTITY_ANON_KEY, ownerIds, memberIds });
@@ -289,4 +314,25 @@ export async function fromEnv(env, { store, providerFactory } = {}) {
   const passcode = passcodeAuth({ passcode: env.ROYAL_OWNER_PASSCODE, secret: env.ROYAL_SESSION_SECRET, days: Number(env.ROYAL_SESSION_DAYS || 30) });
   if (!passcode.configured) console.warn("ROYAL: passcode sign-in is off; set ROYAL_OWNER_PASSCODE (10+ characters) and ROYAL_SESSION_SECRET (32+ characters).");
   return { royal, auth, allowedOrigins, passcode };
+}
+
+/* The realtime voice session ROYAL asks for.  The voice model speaks and
+   listens; ROYAL does the thinking.  It has one tool, ask_royal, and is told
+   to use it for anything about the House, the world, people or actions, so
+   voice and text share one intelligence, one permission engine and one
+   audit.  It is told never to claim an action happened. */
+export function voiceSessionConfig(voice = "eve") {
+  return {
+    voice, turn_detection: { type: "server_vad" },
+    audio: { input: { format: { type: "audio/pcm", rate: 24000 } }, output: { format: { type: "audio/pcm", rate: 24000 } } },
+    instructions: [
+      "You are the voice of ROYAL, the private intelligence of The House of Royal T, speaking with Tahir, its founder.",
+      "Manner: calm, warm, measured, confident, brief. Natural pauses. No jokes unless Tahir jokes. No accent affectation.",
+      "For anything about the House, clients, projects, money, production, policy, research, people, companies, drafts, sending, or any action, call ask_royal with Tahir's exact words, then say what it returns in your own brief words.",
+      "Never answer those from your own knowledge. Never say something was sent, done or approved unless ask_royal says so. Approvals happen on screen, never by voice.",
+      "If Tahir interrupts, stop and listen. Keep answers short unless he asks for more.",
+    ].join(" "),
+    tools: [{ type: "function", name: "ask_royal", description: "Ask ROYAL, the intelligence behind this voice. Returns what to say and shows details on screen.",
+      parameters: { type: "object", properties: { request: { type: "string", description: "Tahir's request, in his words." } }, required: ["request"] } }],
+  };
 }

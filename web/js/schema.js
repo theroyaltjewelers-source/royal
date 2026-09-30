@@ -12,7 +12,7 @@
 export const SPEC_VERSION = 1;
 
 export const MODES = ["ambient", "answer", "exceptions", "focus", "money", "production", "timeline", "decision",
-  "clarify", "draft", "systems", "step_away", "state", "not_connected", "error", "back"];
+  "clarify", "draft", "systems", "step_away", "state", "not_connected", "error", "back", "research", "knowledge", "person", "plan"];
 
 const S = (max = 2000) => ({ t: "string", max });
 const N = { t: "number" };
@@ -30,6 +30,10 @@ const ITEM = OBJ({
   id: OPT(S(120)), title: S(300), detail: OPT(S(1000)), priority: OPT(S(4)), risk: OPT(S(8)), need: OPT(S(12)),
   owner: OPT(S(120)), next_action: OPT(S(500)), amount: OPT(N), entity: OPT(ENTITY), evidence: OPT(EVIDENCE), code: OPT(S(60)),
 });
+
+/* A source is shown, never loaded: the page draws a link only to http(s). */
+const SOURCE = OBJ({ title: OPT(S(300)), domain: S(200), url: OPT(S(800)), retrieved: OPT(S(80)), kind: OPT(S(40)), confirmed: OPT(B) });
+const CLAIM = OBJ({ text: S(600), label: S(40), confidence: OPT(S(10)), sources: ARR(SOURCE, 6), note: OPT(S(600)) });
 
 export const PRIMITIVES = {
   STATEMENT:          OBJ({ text: S(2000), tone: OPT(S(12)), evidence: OPT(EVIDENCE) }),
@@ -49,7 +53,20 @@ export const PRIMITIVES = {
   TIMELINE:           OBJ({ basis: OPT(S(120)), events: ARR(OBJ({ text: S(500), tone: OPT(S(12)) }), 40) }),
   CLEAR_STATE:        OBJ({ clear: B, checked: ARR(S(120), 12), not_checked: ARR(S(200), 12) }),
   SYSTEM_HEALTH:      OBJ({ systems: ARR(OBJ({ name: S(120), on: B, detail: OPT(S(200)) }), 20) }),
-  MESSAGE_VIEW:       OBJ({ to: S(200), purpose: S(200), body: S(4000), by: OPT(S(40)), label: S(40) }),
+  MESSAGE_VIEW:       OBJ({ to: S(200), purpose: S(200), body: S(4000), by: OPT(S(40)), label: S(40), subject: OPT(S(200)), address: OPT(S(200)),
+                            address_status: OPT(S(40)), method: OPT(S(20)) }),
+  RESEARCH_OBJECT:    OBJ({ question: S(1000), answer: S(2000), confidence: S(10), claims: ARR(CLAIM, 10), conflicts: ARR(S(800), 5), unknowns: ARR(S(300), 8),
+                            sources: ARR(SOURCE, 12), retrieved: OPT(S(80)), note: OPT(S(300)) }),
+  PERSON_OBJECT:      OBJ({ name: OPT(S(160)), title: OPT(S(200)), role: OPT(S(80)), company: S(200), domain: OPT(S(200)), since: OPT(S(40)), label: S(40),
+                            confidence: OPT(S(10)), confirmed_on: OPT(S(200)), email: OPT(S(200)), email_status: OPT(S(40)), email_note: OPT(S(500)),
+                            others: ARR(OBJ({ name: S(160), title: S(200), note: OPT(S(200)) }), 6), conflict: OPT(S(800)), sources: ARR(SOURCE, 8) }),
+  KNOWLEDGE_OBJECT:   OBJ({ answer: OPT(S(1500)), label: S(40), passages: ARR(OBJ({ citation: S(300), text: S(1000), status: OPT(S(20)), binding: OPT(B), synthetic: OPT(B) }), 5),
+                            unknowns: ARR(S(300), 4) }),
+  PROSPECT_LIST:      OBJ({ items: ARR(OBJ({ company: S(160), domain: OPT(S(160)), why: OPT(S(400)), person: OPT(S(160)), title: OPT(S(200)), label: S(40), sources: ARR(SOURCE, 4) }), 10),
+                            note: S(400) }),
+  PLAN_OBJECT:        OBJ({ goal: S(200), steps: ARR(OBJ({ text: S(300), requires: S(20), available: B }), 20) }),
+  SOURCE_LIST:        OBJ({ sources: ARR(SOURCE, 20), claims: ARR(CLAIM, 8) }),
+  TASK_OBJECT:        OBJ({ agent: S(40), objective: S(500), status: S(30), created: OPT(S(80)) }),
   SEARCH_RESULTS:     OBJ({ prompt: S(300), candidates: ARR(OBJ({ id: S(80), name: OPT(S(200)), client_name: OPT(S(200)), stage: OPT(S(60)) }), 12) }),
   ACTION_CONFIRMATION:OBJ({ text: S(1000), done: N, pending: N, refused: N }),
   NOT_CONNECTED:      OBJ({ what: S(200), detail: OPT(S(500)), domains: OPT(ARR(OBJ({ name: S(120), description: OPT(S(300)) }), 12)) }),
