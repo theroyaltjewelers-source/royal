@@ -20,63 +20,58 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&":
 const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-US");
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-let TOKEN = null, SUPA = null, REALM = "BUSINESS";
+let TOKEN = null, REALM = "BUSINESS";
 const CONVO = "web-" + Math.random().toString(36).slice(2, 10);
 
 /* -------------------------------------------------------------- auth --- */
+/* ROYAL signs you in with its own passcode, checked by ROYAL's server.  The
+   session ROYAL issues is kept on this device so you stay signed in; "Sign
+   out" forgets it.  Nothing here involves email or the calculator's login. */
+const SESSION_KEY = "royal.session";
+function saved() { try { return localStorage.getItem(SESSION_KEY); } catch (_) { return null; } }
+function save(t) { try { t ? localStorage.setItem(SESSION_KEY, t) : localStorage.removeItem(SESSION_KEY); } catch (_) {} }
+
 async function boot() {
-  /* Arriving from the calculator's ROYAL button: the calculator hands over
-     its own session in the URL fragment (never sent to any server). Taken
-     once, then wiped from the address bar and history. */
+  /* Arriving from the calculator's ROYAL button: accept its session once,
+     then wipe it from the address bar. Optional; the passcode is the main way in. */
   const hand = new URLSearchParams(location.hash.replace(/^#/, ""));
-  const handoff = hand.get("access_token") && hand.get("refresh_token") ? { access_token: hand.get("access_token"), refresh_token: hand.get("refresh_token") } : null;
+  const handoff = hand.get("access_token") ? hand.get("access_token") : null;
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
-  if (CFG.IDENTITY_URL && CFG.IDENTITY_ANON_KEY) {
-    try {
-      await new Promise((ok, no) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
-    } catch (_) { return showSignIn("The sign-in library could not load. Check your connection and reload."); }
-    SUPA = window.supabase.createClient(CFG.IDENTITY_URL, CFG.IDENTITY_ANON_KEY, { auth: { detectSessionInUrl: false } });
-    if (handoff) { const h = await SUPA.auth.setSession(handoff); if (h.error) $("signinStatus").textContent = "The hand-off from the calculator did not work: " + h.error.message; }
-    const { data } = await SUPA.auth.getSession();
-    if (data && data.session) TOKEN = data.session.access_token;
-    SUPA.auth.onAuthStateChange((_e, s) => { TOKEN = s ? s.access_token : null; });
+
+  for (const t of [saved(), handoff, CFG.DEV ? (() => { try { return sessionStorage.getItem("royal.dev"); } catch (_) { return null; } })() : null]) {
+    if (!t) continue;
+    TOKEN = t;
+    const st = await api("GET", "/v1/status");
+    if (st.ok) { if (t.startsWith("rs1.")) save(t); return start(st); }
+    if (t === saved()) save(null);
   }
-  if (!TOKEN && CFG.DEV) { try { TOKEN = sessionStorage.getItem("royal.dev") || null; } catch (_) {} }
-  if (!TOKEN) return showSignIn();
-  const st = await api("GET", "/v1/status");
-  if (!st.ok) { TOKEN = null; return showSignIn(st.message); }
-  start(st);
+  TOKEN = null;
+  showSignIn();
 }
 
-function showSignIn(msg) {
+async function showSignIn(msg) {
   $("signin").hidden = false; $("main").hidden = true;
   $("devBox").hidden = !CFG.DEV;
   if (msg) $("signinStatus").textContent = msg;
-  if (!SUPA) {
-    $("signinForm").hidden = true;
-    if (!msg) $("signinStatus").textContent = "Email sign-in is not set up: web/config.js has no IDENTITY_URL or IDENTITY_ANON_KEY, so ROYAL cannot send a sign-in link.";
-  }
+  const m = await fetch((CFG.API || "") + "/v1/login-methods").then((r) => r.json()).catch(() => ({}));
+  if (m && m.passcode === false && !msg) $("signinStatus").textContent = "ROYAL's passcode is not set up yet. In Render, add ROYAL_OWNER_PASSCODE and ROYAL_SESSION_SECRET, then redeploy.";
+  $("passcode").focus();
 }
-$("signinForm").addEventListener("submit", async (e) => {
+$("passForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const email = $("signinEmail").value.trim(); if (!email || !SUPA) return;
-  const r = await SUPA.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
-  $("signinStatus").textContent = r.error ? "That did not work: " + r.error.message : "Sign-in email sent to " + email + ". Use the 6-digit code in it below, or the link.";
-  if (!r.error) { $("codeForm").hidden = false; $("signinCode").focus(); }
-});
-/* A code typed here signs in to ROYAL directly, whatever address the email's
-   link points at. */
-$("codeForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const email = $("signinEmail").value.trim(), token = $("signinCode").value.trim();
-  if (!email || !token || !SUPA) return;
-  const r = await SUPA.auth.verifyOtp({ email, token, type: "email" });
-  if (r.error || !r.data || !r.data.session) { $("signinStatus").textContent = "That code did not work: " + ((r.error && r.error.message) || "no session") + ". Request a new email and use the newest code."; return; }
-  TOKEN = r.data.session.access_token;
+  const btn = e.submitter || $("passForm").querySelector("button"); btn.disabled = true;
+  $("signinStatus").textContent = "Checking…";
+  const r = await fetch((CFG.API || "") + "/v1/login", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passcode: $("passcode").value }) }).then((x) => x.json()).catch(() => ({ ok: false, message: "ROYAL could not be reached." }));
+  btn.disabled = false; $("passcode").value = "";
+  if (!r.ok) { $("signinStatus").textContent = r.message || "That did not work."; return; }
+  save(r.token); TOKEN = r.token;
   const st = await api("GET", "/v1/status");
   if (!st.ok) return showSignIn(st.message);
+  $("signinStatus").textContent = "";
   start(st);
 });
+$("signOut").addEventListener("click", () => { save(null); TOKEN = null; location.reload(); });
 $("devForm").addEventListener("submit", (e) => {
   e.preventDefault(); TOKEN = $("devToken").value.trim();
   try { sessionStorage.setItem("royal.dev", TOKEN); } catch (_) {}
@@ -100,7 +95,7 @@ const SUGGEST = { BUSINESS: ["What needs me?", "State of the House", "Can I step
   PERSONAL: ["What's on my calendar tomorrow?", "My wealth", "My personal tasks"] };
 
 function start(st) {
-  $("signin").hidden = true; $("main").hidden = false;
+  $("signin").hidden = true; $("main").hidden = false; $("signOut").hidden = false;
   window.__prov = st.provider || {};
   renderConn(st);
   renderChips();

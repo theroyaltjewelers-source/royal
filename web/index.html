@@ -24,20 +24,16 @@
     <button type="button" data-realm="PERSONAL" aria-pressed="false">Personal</button>
   </nav>
   <div class="conn" id="conn" aria-live="polite"></div>
+  <button type="button" class="link signout" id="signOut" hidden>Sign out</button>
 </header>
 
 <section class="signin" id="signin" hidden>
   <h1>Sign in to ROYAL</h1>
-  <p class="quiet">ROYAL uses the same account as the calculator. Only an owner can open it.</p>
-  <form id="signinForm">
-    <label for="signinEmail">Email</label>
-    <input id="signinEmail" type="email" autocomplete="email" required>
-    <button type="submit" class="primary">Send sign-in link</button>
-  </form>
-  <form id="codeForm" hidden>
-    <label for="signinCode">Or enter the 6-digit code from the email</label>
-    <input id="signinCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10">
-    <button type="submit" class="primary">Sign in with code</button>
+  <p class="quiet">ROYAL has its own passcode. It is separate from the calculator and sends no email.</p>
+  <form id="passForm">
+    <label for="passcode">Passcode</label>
+    <input id="passcode" type="password" autocomplete="current-password" required minlength="10">
+    <button type="submit" class="primary">Sign in</button>
   </form>
   <details class="dev" id="devBox" hidden>
     <summary>Development token</summary>
