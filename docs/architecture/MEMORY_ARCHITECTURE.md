@@ -7,9 +7,9 @@ This supersedes `MEMORY_MODEL.md`. ROYAL keeps four kinds of memory, and they ne
 | Memory | What | Where | Lifetime | Survives restart |
 |---|---|---|---|---|
 | Working | What a conversation is about | `ConversationContext`, `core/context.js` | 6 hours from the last turn | No |
-| Operational | Snapshots, decisions, tasks, commitments, audit, events | The ROYAL store, `core/store.js` | Durable | Only with `ROYAL_STORE_PATH` |
+| Operational | Snapshots, decisions, tasks, commitments, audit, events | The ROYAL store, `core/store.js` or `core/pgstore.js` | Durable | With `DATABASE_URL` or `ROYAL_STORE_PATH` |
 | Institutional | The House's own documents | `KnowledgeEngine`, `core/intelligence/knowledge.js` | Rebuilt from `docs/` at start | Yes, from git |
-| Research | External findings and contacts | Store kinds `research` and `contacts` | By freshness class | Only with `ROYAL_STORE_PATH` |
+| Research | External findings and contacts | Store kinds `research` and `contacts` | By freshness class | With `DATABASE_URL` or `ROYAL_STORE_PATH` |
 
 ## 1. Working memory
 
@@ -28,7 +28,19 @@ The store contract (`get`, `put` with compare-and-swap revisions, `list`, `appen
 | `notifications` | Proactive monitoring (off by default) |
 | `audit`, `events` | `AuditService`, `EventBus` |
 
-The backend is chosen in `server/node.js`: `fileStore(ROYAL_STORE_PATH)` (one JSON file, mode 0600) when that variable is set, otherwise `MemoryStore`, with a startup warning that decisions and audit will be lost on restart. `server/deno.js` always uses `MemoryStore`. Postgres (`DATABASE_URL`) holds only the Grok Bot bridge; decisions and audit are NOT IMPLEMENTED on Postgres (`CLAUDE.md`, "What is known to be wrong or missing").
+The backend is chosen by `storeFromEnv()` in `server/store-env.js`, called from `server/node.js` (ADR-013):
+
+(a) **`DATABASE_URL` set:** `PgStore` (`core/pgstore.js`). Records live in `royal_records (kind, id, data jsonb, rev)` and the two logs in `royal_log (log, seq, id, key, record jsonb)` (`server/migrations/002_royal_store.sql`). Compare-and-swap is one conditional `INSERT ... ON CONFLICT DO NOTHING` or `UPDATE ... WHERE rev = expected`, so two writers holding the same revision cannot both win. A trigger refuses every UPDATE, DELETE and TRUNCATE of `royal_log`, so the logs are append-only in the database as well as in code. One pool serves the store and the Grok Bot bridge.
+
+(b) **Otherwise `ROYAL_STORE_PATH` set:** `fileStore()` (one JSON file, mode 0600).
+
+(c) **Neither:** `MemoryStore`, with a startup warning that decisions and audit will be lost on restart.
+
+`server/deno.js` always uses `MemoryStore`: it loads no Postgres driver.
+
+(d) **Moving from the file to the database.** With `DATABASE_URL` and `ROYAL_IMPORT_FILE_STORE=true`, an existing file at `ROYAL_STORE_PATH` is imported into the database once, in one transaction, and only while both tables are empty. Records keep their ids and revisions, log entries their ids and sequence numbers. The import is audited as `STORE_IMPORTED` with counts only.
+
+(e) **Two differences from the memory store**, neither promised by the contract: object keys come back in jsonb's order (arrays keep theirs), and a NUL character inside a string is dropped, because jsonb cannot store one.
 
 ## 3. Institutional memory
 
@@ -85,9 +97,9 @@ It holds claims with labels, sources and retrieval times. It is never promoted t
 
 (a) **Always:** institutional memory, rebuilt from `docs/`.
 
-(b) **With `ROYAL_STORE_PATH` (Node only):** operational and research memory, agent tasks and contact results.
+(b) **With `DATABASE_URL` (Node only):** operational and research memory, agent tasks, contact results and notifications (`server/migrations/002_royal_store.sql`), and the Grok Bot bridge's requests, events, bot tokens and bot state (`server/migrations/001_grokbot.sql`). This is the durable choice on a host without a persistent disk, such as Render's free plan.
 
-(c) **With `DATABASE_URL`:** the Grok Bot bridge's requests, events, bot tokens and bot state (`server/migrations/001_grokbot.sql`).
+(c) **With `ROYAL_STORE_PATH` and no `DATABASE_URL` (Node only):** operational and research memory, agent tasks and contact results, for as long as the file itself survives. A file on a host without a persistent disk is lost on every redeploy.
 
 (d) **Never:** working memory, provider `lastError` and status, Hunter and Apollo quota counters (`Quota` in `contacts.js`), and metrics (`Metrics` in `metrics.js`).
 

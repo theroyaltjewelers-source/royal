@@ -332,22 +332,19 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
 }
 
 /* Builds the bridge from the server environment: Postgres when DATABASE_URL
-   is set (with migrations and LISTEN/NOTIFY), memory otherwise. */
-export async function bridgeFromEnv(env, { migrationsDir, fetchImpl, logger = console } = {}) {
+   is set (with migrations and LISTEN/NOTIFY), memory otherwise.  A caller
+   that already holds a migrated pool (server/node.js, shared with ROYAL's own
+   store) passes it as `pool`; the bridge then neither migrates nor closes it. */
+export async function bridgeFromEnv(env, { migrationsDir, fetchImpl, logger = console, pool: shared = null } = {}) {
   if (!env.DATABASE_URL) {
     if (env.GROKBOT_ENABLED === "true") logger.warn("[grokbot] DATABASE_URL is not set: bot requests, events and tokens are in memory and will be lost on restart.");
     return createBridge({ env, fetchImpl, logger });
   }
-  const { loadPg, poolConfig, migrate, PgBridgeStore } = await import("./store.js");
+  const { PgBridgeStore } = await import("./store.js");
   const { PgPubSub } = await import("./pubsub.js");
-  const pg = await loadPg();
-  const pool = new pg.Pool(poolConfig(env.DATABASE_URL, env));
-  pool.on("error", (e) => logger.warn("[grokbot] database pool error: " + e.message));
-  if (migrationsDir && env.ROYAL_AUTO_MIGRATE !== "false") {
-    const applied = await migrate(pool, migrationsDir);
-    if (applied.length) logger.log("[grokbot] applied migrations: " + applied.join(", "));
-  }
-  const store = new PgBridgeStore(pool);
+  const { openPool } = await import("../db.js");
+  const pool = shared || await openPool(env, { migrationsDir, logger });
+  const store = new PgBridgeStore(pool, { ownsPool: !shared });
   const pubsub = new PgPubSub(store, pool, { logger });
   await pubsub.start();
   return createBridge({ env, store, pubsub, fetchImpl, logger });

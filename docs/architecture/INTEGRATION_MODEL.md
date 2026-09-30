@@ -31,7 +31,8 @@ A connector exposes read tools returning `{ok, data, evidence}`, or `{ok:false, 
 |---|---|---|
 | ROYAL_ENV | yes in production | `production` refuses the development token |
 | PORT | no | Default 8787 |
-| ROYAL_STORE_PATH | yes for durability | JSON store file; memory only if unset (warned) |
+| DATABASE_URL | yes for durability on a host without a disk | Postgres for ROYAL's store and the Grok Bot bridge; takes precedence over ROYAL_STORE_PATH |
+| ROYAL_STORE_PATH | without DATABASE_URL | JSON store file; memory only if neither is set (warned) |
 | ROYAL_IDENTITY_URL, ROYAL_IDENTITY_ANON_KEY | yes | Supabase project used to verify sign-ins |
 | ROYAL_OWNER_IDS | yes | Comma-separated owner user ids |
 | ROYAL_MEMBER_IDS | no | Ingest-only user ids |
@@ -43,7 +44,7 @@ A connector exposes read tools returning `{ok, data, evidence}`, or `{ok:false, 
 
 ## 4. Next Integration Phase
 
-(a) **Postgres store** for multi-instance and Edge deployments: tables `royal_records (kind, id, data jsonb, rev int, primary key (kind, id))` with compare-and-swap on `rev`, and `royal_log (log, seq bigserial, record jsonb)` with no UPDATE or DELETE grants. The `Store` contract in `core/store.js` is what it must satisfy. The existing store tests become its conformance suite.
+(a) **Postgres store: done** (ADR-013) on the Node entry. `core/pgstore.js` satisfies the `Store` contract on `royal_records` and `royal_log` (`server/migrations/002_royal_store.sql`); a trigger refuses UPDATE, DELETE and TRUNCATE of the log. The store tests are now a conformance suite run against memory, the file store and Postgres (`tests/store.test.js`). Still open: the Deno and Edge entry has no Postgres driver, and conversation context is still per process.
 
 (b) **Server-side calculator derivations** (calculator engineering item E2: decouple `compute()` from the DOM). Once the calculator's rules can run headlessly, a Supabase function can serve the House API directly, and ROYAL no longer depends on a calculator tab being open.
 

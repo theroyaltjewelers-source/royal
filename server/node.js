@@ -6,10 +6,10 @@ import { readFile } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHandler, fromEnv } from "./handler.js";
-import { fileStore, MemoryStore } from "../core/store.js";
 import { GrokProvider } from "../core/providers/grok.js";
 import { UnavailableProvider } from "../core/providers/provider.js";
 import { bridgeFromEnv } from "../core/grokbot/bridge.js";
+import { storeFromEnv } from "./store-env.js";
 import { nodeAdapter } from "./node-adapter.js";
 import { intelligenceFromEnv } from "./intelligence-env.js";
 
@@ -31,11 +31,11 @@ async function staticFiles(path) {
 }
 
 const env = process.env;
-const store = env.ROYAL_STORE_PATH ? await fileStore(env.ROYAL_STORE_PATH) : new MemoryStore();
-if (!env.ROYAL_STORE_PATH) console.warn("ROYAL: ROYAL_STORE_PATH is not set; decisions and audit are in memory and will be lost on restart.");
-/* The Grok Bot bridge: Postgres when DATABASE_URL is set (migrations run on
-   start unless ROYAL_AUTO_MIGRATE=false), memory otherwise. */
-const bridge = await bridgeFromEnv(env, { migrationsDir: join(ROOT, "server", "migrations") });
+/* ROYAL's own store: Postgres when DATABASE_URL is set, else the JSON file at
+   ROYAL_STORE_PATH, else memory (warned).  With Postgres, one migrated pool
+   serves both the store and the Grok Bot bridge. */
+const { store, pool } = await storeFromEnv(env, { migrationsDir: join(ROOT, "server", "migrations") });
+const bridge = await bridgeFromEnv(env, { migrationsDir: join(ROOT, "server", "migrations"), pool });
 /* The intelligence layer's parts: House knowledge, safe fetching, contact
    providers, email, metrics.  Each reports NOT CONFIGURED without its key. */
 const intel = await intelligenceFromEnv(env, { docsDir: join(ROOT, "docs") });

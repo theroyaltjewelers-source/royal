@@ -68,7 +68,7 @@ Read this before changing anything.
 
 ## What is known to be wrong or missing
 
-(a) Stores: decisions and audit are still memory or JSON file only (Postgres now exists for the Grok Bot bridge; moving these onto it is the next step). Multi-instance needs that.
+(a) Stores: with `DATABASE_URL`, ROYAL's own records and logs live in Postgres (`core/pgstore.js`, ADR-013) and survive restarts. Without it they are a JSON file or memory. The Deno entry is still memory only. Conversation context is still in process memory.
 
 (b) ROYAL refreshes only while a signed-in calculator is open (ADR-002).
 

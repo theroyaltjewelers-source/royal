@@ -5,7 +5,6 @@ import { PermissionService, TOOL_POLICY } from "../core/permissions.js";
 import { MemoryStore } from "../core/store.js";
 import { AuditService } from "../core/audit.js";
 import { DecisionService, ConsequenceGate } from "../core/decisions.js";
-import { EventBus } from "../core/events.js";
 import { route } from "../core/router.js";
 import { resolveEntity } from "../core/context.js";
 import { freshness, sourceConflict, fact } from "../core/sources.js";
@@ -157,32 +156,9 @@ test("a decision cannot be resolved twice", async () => {
   assert.equal(r.ok, false); assert.equal(r.failed_because, "ALREADY_REJECTED");
 });
 
-/* --------------------------------------------------------------- store -- */
-test("store refuses a write over a revision that has moved", async () => {
-  const s = new MemoryStore();
-  const a = await s.put("tasks", "t1", { v: 1 }, null);
-  assert.equal(a.ok, true);
-  assert.equal((await s.put("tasks", "t1", { v: 2 }, null)).ok, false);
-  assert.equal((await s.put("tasks", "t1", { v: 2 }, 1)).ok, true);
-  const stale = await s.put("tasks", "t1", { v: 3 }, 1);
-  assert.equal(stale.ok, false); assert.equal(stale.current.data.v, 2);
-});
-test("the audit log is append-only", async () => {
-  const s = new MemoryStore();
-  await s.append("audit", { action: "X" });
-  await assert.rejects(() => s.put("audit", "audit_00000001", {}, 1), /APPEND_ONLY/);
-  const [r] = await s.readLog("audit");
-  assert.throws(() => { "use strict"; r.action = "Y"; s.logs.get("audit")[0].action = "Y"; });
-});
-
 /* ------------------------------------------------------------ security -- */
-test("secrets never reach the audit log", async () => {
-  const s = new MemoryStore(), a = new AuditService(s);
-  await a.record({ action: "X", result: { api_key: "xai-abcdefghijklmnopqrstu", nested: { Authorization: "Bearer y" }, jwt: "eyJa.eyJb.c" } });
-  const [r] = await s.readLog("audit");
-  const txt = JSON.stringify(r);
-  assert.ok(!/xai-abc/.test(txt)); assert.ok(!/Bearer y/.test(txt)); assert.ok(!/eyJa\.eyJb/.test(txt));
-});
+/* The store, audit and event-dedupe tests run against every backend in
+   tests/store.test.js. */
 test("redact catches bare keys and tokens in values", () => {
   assert.equal(redact("xai-0123456789abcdefghij"), "[REDACTED_KEY]");
   assert.equal(redact("eyJhbGciOi.eyJzdWIi.sig"), "[REDACTED_JWT]");
@@ -197,16 +173,6 @@ test("a snapshot with an unknown contract or stage is rejected", () => {
   const s = house(); s.projects[0].stage = "Teleported";
   assert.equal(validateSnapshot(s).ok, false);
   assert.equal(validateSnapshot(house()).ok, true);
-});
-
-/* ------------------------------------------------------------- events -- */
-test("a duplicate event is recognised and handled once", async () => {
-  const s = new MemoryStore(), bus = new EventBus({ store: s, audit: new AuditService(s) });
-  let n = 0; bus.subscribe(["PAYMENT_RECEIVED"], () => { n++; });
-  await bus.publish({ type: "PAYMENT_RECEIVED", key: "p1" });
-  const again = await bus.publish({ type: "PAYMENT_RECEIVED", key: "p1" });
-  assert.equal(n, 1); assert.equal(again.duplicate, true);
-  await assert.rejects(() => bus.publish({ type: "NOT_A_THING", key: "x" }), /EVENT_INVALID/);
 });
 
 /* ----------------------------------------------------- routing/context -- */

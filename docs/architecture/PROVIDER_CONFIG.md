@@ -14,7 +14,8 @@ Secrets live only in the server's environment, which in production is Render's e
 |---|---|---|---|
 | `PORT` | 8787 | HTTP port (`server/node.js`) | no |
 | `ROYAL_ENV` | unset | If `production`, the server refuses to start with `ROYAL_DEV_OWNER_TOKEN` set | no |
-| `ROYAL_STORE_PATH` | unset (memory) | File path for ROYAL's store. Without it, decisions, audit, research cache and contact cache are lost on restart | no |
+| `ROYAL_STORE_PATH` | unset (memory) | File path for ROYAL's store, used when `DATABASE_URL` is not set. Without either, decisions, audit, research cache and contact cache are lost on restart | no |
+| `ROYAL_IMPORT_FILE_STORE` | off | `true` imports the file at `ROYAL_STORE_PATH` into an empty Postgres store once, at start (section 11) | no |
 | `ROYAL_TZ_OFFSET_MIN` | -240 | House time zone offset in minutes | no |
 | `ROYAL_ALLOWED_ORIGINS` | empty | Comma list of origins for CORS; also added to the CSP `frame-ancestors` | no |
 
@@ -99,13 +100,15 @@ Voice also needs `XAI_API_KEY` and flag `realtime_voice`, and is offered on the 
 
 | Variable | Default | Meaning | Secret |
 |---|---|---|---|
-| `DATABASE_URL` | unset (memory) | Postgres for the Grok Bot bridge. It usually contains a password | yes |
+| `DATABASE_URL` | unset (memory) | Postgres for ROYAL's own store and the Grok Bot bridge. It usually contains a password | yes |
 | `DATABASE_SSL` | on | `false` disables TLS (also off for localhost or `sslmode=disable`) | no |
 | `DATABASE_SSL_STRICT` | off | `true` verifies the server certificate | no |
-| `DATABASE_POOL_MAX` | 5 | Pool size | no |
+| `DATABASE_POOL_MAX` | 5 | Pool size, shared by the store and the bridge | no |
 | `ROYAL_AUTO_MIGRATE` | on | `false` skips migrations on start | no |
 
-`DATABASE_URL` serves only the bridge, and only on the Node entry: `server/deno.js` builds the bridge in memory with `createBridge({ env })`. ROYAL's own store uses `ROYAL_STORE_PATH` on Node; Deno always uses memory.
+`DATABASE_URL` holds both ROYAL's own store (decisions, tasks, commitments, snapshots, notifications, research and contact caches, the audit and events logs; ADR-013) and the Grok Bot bridge, on the Node entry only. One pool serves both. `server/deno.js` loads no Postgres driver, so there both run in memory.
+
+Use a database separate from the calculator's Supabase project: ROYAL is a separate service (ADR-001). When `DATABASE_URL` is set, `ROYAL_STORE_PATH` is ignored except as the source of a one-time import (`ROYAL_IMPORT_FILE_STORE=true`, run while the database holds none of ROYAL's records). Rollback: `server/migrations/002_royal_store.down.sql`, run by hand, destroys every record and log entry.
 
 ## 12. Flags
 
