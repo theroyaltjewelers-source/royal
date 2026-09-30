@@ -22,8 +22,8 @@ async function staticFiles(path) {
   try {
     const buf = await readFile(file);
     return new Response(buf, { headers: { "Content-Type": TYPES[extname(file)] || "application/octet-stream", "Cache-Control": "no-cache",
-      "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https:; img-src 'self' data:; frame-ancestors 'self' " + (process.env.ROYAL_ALLOWED_ORIGINS || "").split(",").join(" ") } });
+      "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Permissions-Policy": "microphone=(self), camera=(), geolocation=()",
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https:; img-src 'self' data:; frame-ancestors 'self' " + (process.env.ROYAL_ALLOWED_ORIGINS || "").split(",").join(" ") } });
   } catch { return null; }
 }
 

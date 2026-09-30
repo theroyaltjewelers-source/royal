@@ -15,7 +15,8 @@ import { DecisionService, ConsequenceGate, failure } from "./decisions.js";
 import { EventBus, eventForChange } from "./events.js";
 import { SourceHealth } from "./sources.js";
 import { resolveEntity, ConversationContext } from "./context.js";
-import { route } from "./router.js";
+import { interpret } from "./intent.js";
+import { compose } from "./composer.js";
 import { agentResult, validateResult } from "./result.js";
 import { UnavailableProvider, parseModelJson } from "./providers/provider.js";
 import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM } from "./enums.js";
@@ -86,10 +87,10 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const w = await store.put("waiting", id, { id, ...a, waiting_since: a.waiting_since || clock(), resolved_at: null }, null);
     return { ok: w.ok, id };
   });
-  tools.set("draft_client_update", async ({ item }) => {
-    const { draftFor } = await import("../skills/drafts.js");
-    const d = item ? draftFor(item, {}) : null;
-    return d ? { ok: true, data: d } : failure({ attempted: "draft", failed_because: "NO_TEMPLATE_FOR_ITEM" });
+  tools.set("draft_client_update", async ({ item, project }) => {
+    const { draftFor, statusDraft } = await import("../skills/drafts.js");
+    const d = (item && draftFor(item, {})) || (project && statusDraft(project)) || null;
+    return d ? { ok: true, data: d } : failure({ attempted: "draft", failed_because: "NOTHING_TO_DRAFT_FROM", impact: "No message was written." });
   });
 
   decisions.registerExecutor("create_internal_task", createTask);
@@ -101,7 +102,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   function makeCtx(base) {
     const delegations = [];
     const ctx = {
-      ...base, owners, decisions, connector, gate, store, provider, health, domains: domainState(), delegations,
+      ...base, owners, decisions, connector, gate, store, provider, health, domains: domainState(), delegations, registry, flags: F, messenger,
       read: async (agentId, tool, args = {}) => {
         const r = await gate.request({ agentId, tool, args, domain: "royal_t", run_id: base.run_id });
         if (r.status === "OK") return r.output;
@@ -178,6 +179,16 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
         unknowns: (p.value.unknowns || []).slice(0, 6).map(String), proposals } };
   }
 
+  /* Every answer carries a validated presentation spec (core/composer.js).
+     Rejected primitives are dropped and recorded; they never reach a screen. */
+  async function attachPresentation(result, realm) {
+    const c = compose(result, { realm });
+    result.presentation = c.ok ? c.spec : null;
+    if (!c.ok || c.rejected.length)
+      await audit.record({ actor: "royal", run_id: result.run_id, action: "COMPOSER_REJECTED", summary: "Presentation primitives rejected",
+        error: JSON.stringify(c.ok ? c.rejected : c.errors).slice(0, 800) });
+  }
+
   /* ---------------------------------------------------------- personal --- */
   async function handlePersonal(cmd, run_id) {
     const convoKey = REALM.PERSONAL + ":" + cmd.conversation_id;
@@ -190,6 +201,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const result = agentResult({ agent: "royal", run_id, status: out.status || RUN_STATUS.OK, summary: out.summary, findings: out.findings || [],
       sources: [], surface: out.surface || null, timestamp: clock() });
     result.skill = pskill; result.realm = REALM.PERSONAL; result.connection = null; result.delegations = []; result.entity = null;
+    await attachPresentation(result, REALM.PERSONAL);
     conversations.set(convoKey, { entity: null, last_skill: pskill, last_items: [] });
     await audit.record({ actor: "royal", run_id, trigger: cmd.modality, action: "COMMAND_ANSWERED", summary: pskill + ": " + String(result.summary).slice(0, 160),
       result: result.status, realm: REALM.PERSONAL });
@@ -212,7 +224,9 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const latest = await connector.latest();
     const projects = latest ? latest.snapshot.projects : [];
     const res = resolveEntity(cmd.content, { projects, selected: cmd.context.selected_entity, recent: convo.entity });
-    let r = cmd.skill ? { skill: cmd.skill, reason: "EXPLICIT", confidence: 1 } : route(cmd.content, { entityResolved: res.status === "RESOLVED", entityStrong: !!res.strong });
+    const intent = cmd.skill ? { verb: "UI", skill: cmd.skill, reason: "EXPLICIT", confidence: 1 }
+      : interpret(cmd.content, { entityResolved: res.status === "RESOLVED", entityStrong: !!res.strong, entityFromConversation: res.via === "conversation" });
+    let r = { skill: intent.skill, reason: intent.reason, confidence: intent.confidence };
     if (!SKILLS[r.skill] && r.skill !== "open_question") r = { skill: "open_question", reason: "UNKNOWN_SKILL" };
     if (SKILLS[r.skill] && (SKILLS[r.skill].realm || REALM.BUSINESS) !== REALM.BUSINESS) {
       const res2 = agentResult({ agent: "royal", run_id, status: RUN_STATUS.OK, timestamp: clock(),
@@ -222,12 +236,19 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       return res2;
     }
 
-    const useEntity = res.status === "RESOLVED" && (res.strong || r.skill === "project_status");
-    const base = { run_id, text: cmd.content, now: clock(), skill: r.skill, entity: useEntity ? res.entity : null, conversation: convo, command: cmd };
+    const ENTITY_SKILLS = ["project_status", "project_money", "delegate_draft"];
+    /* A command that needs a record and names none ("Have GRACE prepare an
+       update") is about the record already under discussion, if there is one. */
+    if (res.status === "NONE" && ENTITY_SKILLS.indexOf(r.skill) >= 0 && convo.entity) {
+      const p = projects.find((x) => x.id === convo.entity.id);
+      if (p) { res.status = "RESOLVED"; res.entity = p; res.via = "conversation"; res.strong = true; }
+    }
+    const useEntity = res.status === "RESOLVED" && (res.strong || ENTITY_SKILLS.indexOf(r.skill) >= 0);
+    const base = { run_id, text: cmd.content, now: clock(), skill: r.skill, entity: useEntity ? res.entity : null, conversation: convo, command: cmd, intent };
     const ctx = makeCtx(base);
     let out;
     try {
-      if (res.status === "AMBIGUOUS" && (r.skill === "project_status" || r.skill === "open_question")) {
+      if (res.status === "AMBIGUOUS" && (ENTITY_SKILLS.indexOf(r.skill) >= 0 || r.skill === "open_question")) {
         out = { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "More than one commission matches. Which one?", findings: [],
           surface: { type: "clarify", candidates: res.candidates.map((p) => ({ id: p.id, name: p.name, client_name: p.client && p.client.name, stage: p.stage })) } };
       } else if (res.status === "NOT_FOUND") {
@@ -250,11 +271,16 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     result.delegations = ctx.delegations.map((d) => ({ agent: d.agent, status: d.status, verified: d.verified, errors: d.errors || [] }));
     result.entity = base.entity ? { type: "project", id: base.entity.id, name: base.entity.name, client_name: base.entity.client && base.entity.client.name } : null;
 
-    conversations.set(convoKey, {
+    if (r.skill === "clear") conversations.set(convoKey, { entity: null, last_skill: null, last_items: [], pending_draft: null });
+    else conversations.set(convoKey, {
       entity: base.entity ? { id: base.entity.id } : convo.entity,
       last_skill: r.skill === "handle_it" ? convo.last_skill : r.skill,
-      last_items: r.skill === "handle_it" ? [] : (result.findings || []).slice(0, 12),
+      last_items: r.skill === "handle_it" || r.skill === "go_back" ? convo.last_items || [] : (result.findings || []).slice(0, 12),
+      /* A draft stays "the one under discussion" until it is sent, replaced or cleared. */
+      pending_draft: out.pending_draft !== undefined ? out.pending_draft : (convo.pending_draft || null),
     });
+    result.intent = { verb: intent.verb, agent: intent.agent || null };
+    await attachPresentation(result, REALM.BUSINESS);
     await audit.record({ actor: "royal", run_id, trigger: cmd.modality, action: "COMMAND_ANSWERED", summary: r.skill + ": " + String(result.summary).slice(0, 160),
       entities: result.entities, result: result.status, executive: r.skill === "handle_it" });
     return result;

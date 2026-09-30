@@ -2,88 +2,89 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#050605">
 <meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ROYAL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 fill=%22%23050605%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%228%22 fill=%22%2395fe00%22/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;1,400&family=Poppins:wght@300;400;500&display=swap">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="css/royal.css">
 </head>
-<body>
-<a class="skip" href="#main">Skip to content</a>
+<body data-auth="out" data-state="OFFLINE" data-layout="rest" data-realm="BUSINESS">
 
-<header class="bar">
-  <div class="mark" aria-label="ROYAL, The House of Royal T">
-    <span class="word">ROYAL</span>
-    <span class="house">THE HOUSE OF ROYAL T</span>
-  </div>
-  <nav class="realms" aria-label="Realm">
-    <button type="button" data-realm="BUSINESS" aria-pressed="true">Business</button>
-    <button type="button" data-realm="PERSONAL" aria-pressed="false">Personal</button>
-  </nav>
-  <div class="conn" id="conn" aria-live="polite"></div>
-  <button type="button" class="link signout" id="signOut" hidden>Sign out</button>
-</header>
+<!-- The Core.  One canvas, full screen, behind everything. -->
+<canvas id="core" aria-hidden="true"></canvas>
 
-<section class="signin" id="signin" hidden>
-  <h1>Sign in to ROYAL</h1>
-  <p class="quiet">ROYAL has its own passcode. It is separate from the calculator and sends no email.</p>
-  <form id="passForm">
-    <label for="passcode">Passcode</label>
-    <input id="passcode" type="password" autocomplete="current-password" required minlength="10">
-    <button type="submit" class="primary">Sign in</button>
-  </form>
-  <details class="dev" id="devBox" hidden>
-    <summary>Development token</summary>
-    <form id="devForm"><label for="devToken">Token</label><input id="devToken" type="password" autocomplete="off"><button type="submit">Use token</button></form>
-  </details>
-  <p class="quiet" id="signinStatus" role="status"></p>
-</section>
+<!-- The touch target over the Core. -->
+<button type="button" id="wake" class="wake" aria-label="Talk to ROYAL" aria-describedby="stateLbl"></button>
 
-<main id="main" hidden>
+<!-- Quiet corner marks.  Nothing else is permanent. -->
+<div class="marks top">
+  <p class="id"><span class="word">ROYAL</span> <span class="sep" aria-hidden="true">·</span> <span id="realmLbl">Business</span> <span class="sep" aria-hidden="true">·</span> <span id="stateLbl">Offline</span></p>
+  <button type="button" id="menuBtn" class="glyph" aria-label="Menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 16h14"/></svg><span id="decMark" class="mark-n" hidden></span></button>
+</div>
+<div class="marks bottom">
+  <button type="button" id="muteBtn" class="glyph" aria-pressed="false" aria-label="Spoken replies on"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="on" d="M4 10v4h3l4 3V7L7 10H4zM15 9.5a3.5 3.5 0 0 1 0 5M17.5 7a7 7 0 0 1 0 10"/><path class="off" d="M4 10v4h3l4 3V7L7 10H4zM15 10l5 5M20 10l-5 5"/></svg></button>
+  <button type="button" id="kbdBtn" class="glyph" aria-label="Type to ROYAL" aria-keyshortcuts="/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M7 11h.01M11 11h.01M15 11h.01M8 14.5h8"/></svg></button>
+</div>
 
-  <div class="chips" id="chips" aria-label="Suggested commands"></div>
-  <div class="working" id="working" aria-live="polite" hidden></div>
-
-  <section class="answer" id="answer" aria-live="polite" hidden></section>
-
-  <nav class="views" aria-label="Views">
-    <button type="button" data-view="home" aria-pressed="true">Home</button>
-    <button type="button" data-view="decisions" aria-pressed="false">Decisions <span class="count" id="decCount"></span></button>
-    <button type="button" data-view="activity" aria-pressed="false">Activity</button>
-    <button type="button" data-view="agents" aria-pressed="false">Agents</button>
-    <button type="button" data-view="systems" aria-pressed="false">Systems</button>
-  </nav>
-
-  <section class="view" id="view-home"></section>
-  <section class="view" id="view-decisions" hidden></section>
-  <section class="view" id="view-activity" hidden></section>
-  <section class="view" id="view-agents" hidden></section>
-  <section class="view" id="view-systems" hidden></section>
+<!-- Where ROYAL's answer appears: what Tahir said, what ROYAL said, and
+     the objects of the answer. -->
+<main id="column" class="column" aria-label="ROYAL">
+  <p id="heard" class="heard" hidden></p>
+  <p id="caption" class="caption" aria-live="polite"></p>
+  <div id="objects" class="objects"></div>
+  <button type="button" id="retry" class="act" hidden>Try again</button>
 </main>
 
-<form class="command dock" id="command" role="search" aria-label="Command ROYAL" hidden>
-  <button type="button" class="mic" id="mic" hidden aria-label="Speak a command" title="Speak a command. Your browser's speech service turns it into text."><span class="micdot" aria-hidden="true"></span><span id="micLabel">SPEAK</span></button>
-  <label for="ask" class="sr">Command ROYAL</label>
-  <input id="ask" type="text" autocomplete="off" placeholder="Type a command…" enterkeyhint="send" maxlength="2000">
-  <button type="submit" class="primary" aria-label="Send">Ask</button>
-  <span class="dockstat" id="dockStat"><span class="dot" aria-hidden="true"></span><span id="dockStatText">HOUSE</span></span>
+<!-- Specialists that took part in the current answer. -->
+<div id="agents" class="agents" hidden aria-label="Specialists consulted"></div>
+
+<!-- Typing: another way to say the same thing. -->
+<form id="typebar" class="typebar" hidden autocomplete="off">
+  <label for="say" class="sr">Say something to ROYAL</label>
+  <input id="say" name="say" type="text" enterkeyhint="send" placeholder="Say it to ROYAL" maxlength="800">
+  <button type="submit" class="send" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
 </form>
 
-<dialog id="modify" aria-labelledby="modifyTitle">
-  <form method="dialog" id="modifyForm">
-    <h2 id="modifyTitle">Modify before approving</h2>
-    <label for="modifyBody">Message</label>
-    <textarea id="modifyBody" rows="9"></textarea>
-    <label for="modifyNote">Note (optional)</label>
-    <input id="modifyNote" type="text">
-    <div class="row"><button value="cancel" type="submit">Cancel</button><button value="ok" type="submit" class="primary">Approve with changes</button></div>
-  </form>
-</dialog>
+<!-- The menu sheet: decisions, activity, specialists, systems, preferences. -->
+<aside id="sheet" class="sheet" hidden aria-label="Menu">
+  <div class="sheet-in">
+    <button type="button" id="sheetClose" class="glyph close" aria-label="Close menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <div id="sheetBody"></div>
+  </div>
+</aside>
+
+<!-- Start-up: only true states, as reported by the server. -->
+<section id="boot" class="boot" hidden aria-label="ROYAL starting">
+  <p class="boot-w">ROYAL</p>
+  <ol id="bootLines" class="boot-l" aria-live="polite"></ol>
+  <p class="boot-skip">Tap to skip</p>
+</section>
+
+<!-- Sign in with ROYAL's own passcode. -->
+<section id="signin" class="signin" hidden>
+  <div class="signin-in">
+    <p class="boot-w">ROYAL</p>
+    <form id="passForm">
+      <label for="passcode">Passcode</label>
+      <input id="passcode" type="password" autocomplete="current-password" required minlength="4">
+      <button type="submit" class="act approve wide">Sign in</button>
+    </form>
+    <p id="signinStatus" class="sb-note" role="status"></p>
+  </div>
+</section>
+
+<p id="live-state" class="sr" aria-live="polite"></p>
+<p id="fatal" class="fatal" role="alert" hidden></p>
 
 <script src="config.js"></script>
-<script type="module" src="app.js"></script>
+<script type="module" src="js/app.js"></script>
+<noscript><p class="fatal">ROYAL needs JavaScript.</p></noscript>
 </body>
 </html>

@@ -33,3 +33,25 @@ export function draftFor(item, ctx) {
       return null;
   }
 }
+
+/* A plain status update when nothing specific is outstanding.  States the
+   verified stage and promises nothing new. */
+export function statusDraft(p) {
+  if (!p) return null;
+  const c = (p.client && p.client.name) || "";
+  const piece = p.name || "commission";
+  const stageLine = {
+    "Inquiry": "We have your request and are preparing the design direction.",
+    "Design": "Your design is in progress.",
+    "CAD": "Your piece is being modelled in CAD.",
+    "Awaiting approval": "Your design is ready for your review whenever you are.",
+    "Deposit due": "Your design is set and we are ready to begin production once the deposit is in.",
+    "Production": "Your piece is in production with our workshop.",
+    "Quality control": "Your piece is in final quality control.",
+    "Balance due": "Your piece is finished and the final balance is now due.",
+    "Ready": "Your piece is finished and ready for you.",
+    "Delivered": "Thank you again for your commission.",
+  }[p.stage] || "Your commission is moving forward.";
+  return { purpose: "a status update", label: "RECOMMENDATION",
+    body: "Hi " + (String(c).trim().split(/\s+/)[0] || "there") + ",\n\nA quick update on your " + piece + ". " + stageLine + " We will be in touch as it moves forward." + "\n\nWarm regards,\nThe House of Royal T" };
+}

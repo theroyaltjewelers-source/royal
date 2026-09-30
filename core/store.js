@@ -95,6 +95,7 @@ export async function fileStore(path) {
     });
     return chain;
   };
+  s.durable = true;
   const put = s.put.bind(s), append = s.append.bind(s);
   s.put = async (...a) => { const r = await put(...a); if (r.ok) await flush(); return r; };
   s.append = async (...a) => { const r = await append(...a); await flush(); return r; };

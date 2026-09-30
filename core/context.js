@@ -5,11 +5,12 @@
    ID in the text, names in the text, then what this conversation was last
    about.  Names are never identifiers; two clients can share one. */
 
-const PRONOUN = /\b(it|this|that|his|her|their|the same)\b(\s+(one|project|piece|ring|pendant|chain|order|commission|client))?/i;
+const PRONOUN = /\b(it|this|that|he|him|his|she|her|they|them|their|the same|the client)\b(\s+(one|project|piece|ring|pendant|chain|order|commission|client))?/i;
 const ID = /\bPRJ-\d{4}-\d{5}\b/i;
 const STOP = new Set(["the", "and", "for", "with", "what", "why", "who", "how", "status", "project",
   "piece", "order", "client", "hasnt", "hasn", "moved", "doing", "update", "about", "tell", "show", "house", "royal", "today", "money",
-  "owes", "owe", "need", "needs", "production", "waiting", "tahir", "custom"]);
+  "owes", "owe", "need", "needs", "production", "waiting", "tahir", "custom", "does", "did", "last", "talk", "when", "pull", "open",
+  "bring", "focus", "have", "prepare", "draft", "send", "holding", "much", "balance", "paid", "still", "grace", "ace", "ledger", "forge"]);
 
 function words(s) { return String(s || "").toLowerCase().replace(/['’]s\b/g, "").replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean); }
 

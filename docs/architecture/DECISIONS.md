@@ -67,3 +67,11 @@
 **Decision.** Every command carries a realm. Personal commands are handled by a separate path that never reads a business connector, never resolves a business record, never consults a business specialist and never sends business facts to a model. Business commands refuse personal skills and point to the Personal side. Conversations, decisions, activity and domain lists are keyed or filtered by realm. The web app gives Personal its own colour, home, suggestions and views, and clears the screen on every switch.
 **Why.** Tahir's direction: the two sections must be completely separate.
 **Proved.** `tests/royal.test.js` ("Business and Personal apart"): personal answers contain no business names, amounts, IDs or specialist consultations; no model call is made from Personal with business facts; conversations do not cross; lists are per realm.
+
+## ADR-010. An ambient interface composed on the server
+
+**Decision.** The dashboard web app is replaced by an ambient interface centred on a living Core (`web/js/core.js`), driven by an explicit state machine (`web/js/state.js`). Answers are shown as primitives from a fixed vocabulary (`web/js/schema.js`), composed deterministically on the server (`core/composer.js`), validated on both sides, and never written by a model. Voice uses the browser's speech services and is optional; typing always works.
+**Why.** Tahir's direction: one presence to talk to, not screens to navigate, with nothing on screen that is not true.
+**Tradeoffs.** Fewer things visible at once than a dashboard; lists live behind the menu or come from asking. Browser speech recognition sends audio to the browser vendor in Chrome and Edge. WebGL is needed for the full Core; a 2D fallback covers the rest.
+**Proved.** `tests/core.test.js` (composer schema), `tests/royal.test.js` (every answer carries a valid presentation; the Marcus conversation), `tests/web.test.js` (page and scripts agree, CSP-clean, no secrets), and browser walkthroughs at five sizes, with reduced motion and without WebGL.
+**Reversibility.** High. The API is unchanged; the old app is in git history.

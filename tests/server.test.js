@@ -178,3 +178,17 @@ test("the Test Grok endpoint is owner-only and says plainly when Grok is not set
   const r = await (await h(new Request("https://royal.test/v1/provider/test", { method: "POST", headers: { Authorization: "Bearer x" } }))).json();
   assert.equal(r.ok, false); assert.equal(r.failed_because, "PROVIDER_NOT_CONNECTED");
 });
+
+test("boot reports only true states", async () => {
+  const { call } = app();
+  let b = await (await call("GET", "/v1/boot")).json();
+  const get = (k) => b.lines.find((l) => l.k === k);
+  assert.equal(get("PROJECT SYSTEM").v, "NOT CONNECTED");
+  assert.equal(get("MEMORY").v, "TEMPORARY");
+  assert.match(get("AGENT NETWORK").v, /^4 OF 5 ACTIVE$/);
+  await call("POST", "/v1/ingest/calculator", { body: { snapshot: house() } });
+  b = await (await call("GET", "/v1/boot")).json();
+  assert.equal(get("PROJECT SYSTEM").v, "CONNECTED");
+  const ag = await (await call("GET", "/v1/agents")).json();
+  assert.equal(ag.agents.find((a) => a.id === "house").health, "NOT_CONNECTED");
+});

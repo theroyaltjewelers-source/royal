@@ -213,7 +213,8 @@ test("a specialist that throws is contained; the rest of the answer stands", asy
 
 test("agents, skills and domains are introspectable", async () => {
   const r = await royalWith();
-  assert.deepEqual(r.agents().map((a) => a.id), ["royal", "ace", "grace", "ledger", "forge"]);
+  assert.deepEqual(r.agents().map((a) => a.id), ["royal", "ace", "grace", "ledger", "house", "forge"]);
+  assert.equal(r.agents().find((a) => a.id === "house").status, "NOT_CONNECTED");
   assert.ok(r.skills().some((s) => s.id === "can_i_step_away" && s.status === "ACTIVE"));
   assert.ok(r.skills().some((s) => s.status === "PLANNED"));
   const d = r.domains();
@@ -260,4 +261,62 @@ test("decisions, activity and domains are listed per realm", async () => {
 test("an unknown realm is refused", async () => {
   const a = await (await royalWith()).handle({ content: "hi", realm: "SECRET" });
   assert.equal(a.status, "FAILED");
+});
+
+
+/* ------------------------------------------------ the conversation flagship -- */
+test("pull up, what does he owe, have GRACE prepare an update, send it", async () => {
+  const r = await royalWith();
+  const a = await ask(r, "Pull up Marcus.");
+  assert.equal(a.skill, "project_status"); assert.equal(a.entity.id, "PRJ-2026-00101");
+  assert.equal(a.presentation.mode, "focus"); assert.equal(a.presentation.surfaces[0].type, "ENTITY_CORE");
+
+  const b = await ask(r, "What does he owe?");
+  assert.equal(b.skill, "project_money"); assert.match(b.summary, /Marcus Hill owes \$13,000/);
+  assert.equal(b.presentation.surfaces[0].type, "MONEY_FLOW");
+  assert.deepEqual(b.delegations.map((d) => d.agent), ["ledger"]);
+
+  const c = await ask(r, "Have GRACE prepare an update.");
+  assert.equal(c.skill, "delegate_draft"); assert.equal(c.presentation.surfaces[0].type, "MESSAGE_VIEW");
+  assert.ok(c.delegations.some((d) => d.agent === "grace" && d.verified));
+  assert.match(c.summary, /Nothing has been sent/);
+
+  const d = await ask(r, "Send it.");
+  assert.equal(d.skill, "send_pending"); assert.equal(d.presentation.mode, "decision");
+  assert.equal(d.presentation.surfaces[0].type, "DECISION_OBJECT"); assert.equal(d.presentation.surfaces[0].data.status, "OPEN");
+  assert.match(d.summary, /needs your approval/); assert.match(d.summary, /Sending isn't connected yet/);
+
+  const e = await ask(r, "Send it.");
+  assert.equal(e.status, "NEEDS_CLARIFICATION", "a sent draft is no longer pending, so a second 'send it' asks");
+});
+test("'send it' with nothing prepared asks instead of guessing", async () => {
+  const a = await ask(await royalWith(), "Send it.");
+  assert.equal(a.status, "NEEDS_CLARIFICATION"); assert.match(a.summary, /Send what\?/);
+});
+test("asking an unconnected specialist says so; LEDGER does not write client messages", async () => {
+  const r = await royalWith();
+  await ask(r, "Pull up Marcus.");
+  const h = await ask(r, "Have HOUSE draft a post about his chain.");
+  assert.equal(h.status, "NOT_CONNECTED"); assert.match(h.summary, /HOUSE isn't connected yet/);
+  const l = await ask(r, "Have LEDGER send him a reminder.");
+  assert.match(l.summary, /LEDGER doesn't write client messages/);
+});
+test("clear forgets the conversation", async () => {
+  const r = await royalWith();
+  await ask(r, "Pull up Marcus.");
+  const c = await ask(r, "Clear.");
+  assert.equal(c.presentation.mode, "ambient");
+  const b = await ask(r, "What does he owe?");
+  assert.notEqual(b.skill, "project_money");
+});
+test("every answer carries a presentation spec that passes its own schema", async () => {
+  const { validateSpec } = await import("../web/js/schema.js");
+  const r = await royalWith();
+  for (const q of ["What needs me?", "Can I step away?", "State of the House", "Who owes us money?", "What are we waiting on?", "Which promises are due?",
+    "Show me production", "What changed today?", "What needs my approval?", "Is the calculator connected?", "Johnson", "status of PRJ-2026-00102", "Handle it", "poem please"]) {
+    const a = await ask(r, q);
+    assert.ok(a.presentation, q + " has no presentation");
+    const v = validateSpec(a.presentation);
+    assert.equal(v.ok, true, q); assert.equal(v.rejected.length, 0, q + ": " + JSON.stringify(v.rejected));
+  }
 });

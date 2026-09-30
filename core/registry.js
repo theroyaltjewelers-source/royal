@@ -84,6 +84,15 @@ const AGENTS_V1 = [
     escalation_target: "royal", status: "ACTIVE", version: "0.1.0",
   },
   {
+    id: "house", name: "HOUSE", role: "Brand and marketing intelligence",
+    description: "Content, campaigns, social presence and brand standards. Registered; not yet connected to any system.",
+    realms: [REALM.BUSINESS], domains: ["royal_t", "tahir_and_co"],
+    capabilities: ["content", "campaigns", "brand_standards"],
+    allowed_tools: [],
+    permission_profile: "specialist_v1", knowledge_sources: ["docs/company/HOUSE_COMPANY_BIBLE.md"],
+    escalation_target: "royal", status: "NOT_CONNECTED", version: "0.1.0",
+  },
+  {
     id: "forge", name: "FORGE", role: "Engineering and systems intelligence",
     description: "Integrations, connectors, data integrity, automation health, incidents, AI infrastructure.",
     realms: [REALM.BUSINESS], domains: ["*"],

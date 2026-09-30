@@ -28,8 +28,13 @@
 | grace | Business | royal_t, tahir_and_co | send_client_message, production_change |
 | ledger | Business | royal_t, tahir_and_co, gold_buy | send_client_message, issue_refund, vendor_payment |
 | forge | Business | all | deploy_production |
+| house | Business | royal_t | none. Status NOT_CONNECTED: brand and marketing, registered so ROYAL can say plainly that it is not connected yet. |
 
 There is no personal-realm specialist yet. The registry accepts one (tested with a hypothetical `vault` agent scoped to `wealth`). [TAHIR TO NAME]
+
+### Registry metadata
+
+`GET /v1/agents` returns, for each specialist, its capabilities, the tools it may use now, the time of its last recorded activity (from the audit ledger) and a health of OK, DEGRADED or NOT_CONNECTED. The interface shows a specialist as a node only when it took part in the current answer, and lists them all in the menu under Specialists.
 
 ## 3. The Agent Result Contract
 

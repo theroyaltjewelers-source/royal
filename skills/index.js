@@ -392,6 +392,69 @@ skill(meta("handle_it", "Handle It", ALL, { purpose: "Turn the last set of findi
     findings: [], surface: { type: "handled", done, pending, refused, verification: "Each item clears when the calculator's records change; ROYAL rechecks at the next reading." } };
 });
 
+/* ------------------------------------------------ conversational follow-ups --- */
+skill(meta("project_money", "Project Balance", ["ledger"], { purpose: "What one client owes on one commission.", inputs: ["entity"], sources: ["PAYMENT", "RECEIVABLE"] }), async (ctx) => {
+  const p = ctx.entity;
+  if (!p) return { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "Whose balance? Name the client or the commission.", findings: [], surface: { type: "text" } };
+  const t = await ctx.read("ledger", "get_project", { id: p.id });
+  ctx.delegations.push({ agent: "ledger", status: t.ok ? RUN_STATUS.OK : RUN_STATUS.FAILED, verified: !!t.ok, errors: t.ok ? [] : [t.failed_because] });
+  if (!t.ok || !t.data) return calcDown(ctx);
+  const x = t.data, who = (x.client && x.client.name) || "The client";
+  const short = Math.max(0, x.capital - x.paid);
+  const parts = [{ label: "Paid", amount: x.paid, sub: "recorded in the calculator" }, { label: "Outstanding", amount: x.outstanding, sub: "of " + money(x.value) }];
+  if (short > 0.005 && ["Delivered", "Ready"].indexOf(x.stage) < 0) parts.push({ label: "Needed before production is funded", amount: short, sub: "production cost not yet covered" });
+  const summary = x.outstanding > 0.005 ? who + " owes " + money(x.outstanding) + " on the " + (x.name || "commission") + ". " + money(x.paid) + " of " + money(x.value) + " is paid." : who + " has paid in full on the " + (x.name || "commission") + ".";
+  return { summary, findings: [], surface: { type: "money_entity", entity: { id: x.id, name: x.name, client_name: who, stage: x.stage }, outstanding: x.outstanding, parts,
+    evidence: { label: E.VERIFIED, source: "calculator", age: t.evidence && t.evidence.age } } };
+});
+
+skill(meta("delegate_draft", "Delegate a Draft", ["ace", "grace"], { purpose: "Have a specialist prepare a client message about the commission under discussion.", inputs: ["entity", "agent"], permissions: ["DRAFT"] }), async (ctx) => {
+  const agentId = (ctx.intent && ctx.intent.agent) || "grace";
+  const agent = ctx.registry.get(agentId);
+  if (!agent) return { status: RUN_STATUS.OK, summary: "I don't have a specialist called " + agentId.toUpperCase() + ".", findings: [], surface: { type: "text" } };
+  if (agent.status !== "ACTIVE")
+    return { status: RUN_STATUS.NOT_CONNECTED, summary: agent.name + " isn't connected yet, so it can't take that on. GRACE or ACE can prepare client messages today.", findings: [],
+      surface: { type: "not_connected", what: agent.name + " (" + agent.role + ")", detail: "Registered, not yet connected to any system." } };
+  const p = ctx.entity;
+  if (!p) return { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "Which client should " + agent.name + " write to?", findings: [], surface: { type: "text" } };
+  const { findings } = await gather(ctx, ["grace", "ledger"]);
+  const mine = findings.filter((f) => f.entity && f.entity.id === p.id).sort(byAttention);
+  const DRAFTABLE = ["BALANCE_ON_FINISHED", "PRODUCTION_SHORT_MOVING", "PRODUCTION_UNFUNDED", "PAST_TARGET", "WAITING_LONG"];
+  const item = mine.find((f) => DRAFTABLE.indexOf(f.code) >= 0) || null;
+  const r = await ctx.gate.request({ agentId, tool: "draft_client_update", args: { item, project: p }, domain: "royal_t", run_id: ctx.run_id });
+  ctx.delegations.push({ agent: agentId, status: r.status === "OK" ? RUN_STATUS.OK : RUN_STATUS.FAILED, verified: r.status === "OK", errors: r.status === "OK" ? [] : [r.reason || r.failed_because] });
+  if (r.status === "DENIED")
+    return { status: RUN_STATUS.OK, summary: agent.name + " doesn't write client messages. GRACE or ACE can.", findings: [], surface: { type: "text" } };
+  if (r.status !== "OK" || !r.output || !r.output.ok)
+    return { status: RUN_STATUS.FAILED, summary: agent.name + " could not prepare it: " + ((r.output && r.output.failed_because) || r.failed_because || "unknown") + ". Nothing was written.", findings: [], surface: { type: "text" } };
+  const d = r.output.data, who = (p.client && p.client.name) || "the client";
+  return { summary: agent.name + " prepared " + d.purpose + " for " + who + ". Nothing has been sent. Say \"send it\" when you're ready, and I'll put it in front of you for approval.",
+    findings: [], pending_draft: { agent: agentId, project_id: p.id, client_name: who, client_id: p.client && p.client.id, purpose: d.purpose, body: d.body, item_id: item && item.id, amount: item && item.amount },
+    surface: { type: "message_draft", to: who, purpose: d.purpose, body: d.body, by: agent.name, entity: { id: p.id } } };
+});
+
+skill(meta("send_pending", "Send the Draft", [], { purpose: "Send the message under discussion, through approval.", permissions: ["APPROVAL_REQUIRED"] }), async (ctx) => {
+  const pd = ctx.conversation && ctx.conversation.pending_draft;
+  if (!pd) return { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "Send what? There's no message ready in this conversation. Ask GRACE or ACE to prepare one first.", findings: [], surface: { type: "text" } };
+  const r = await ctx.gate.request({ agentId: pd.agent, tool: "send_client_message", domain: "royal_t", run_id: ctx.run_id,
+    args: { project_id: pd.project_id, draft: { purpose: pd.purpose, body: pd.body } },
+    decision: { title: "Send " + pd.purpose + " to " + pd.client_name, description: pd.body, related_project_id: pd.project_id, related_client_id: pd.client_id,
+      priority: P.P2, risk: R.YELLOW, recommended_option: "APPROVE", reasoning_summary: "Prepared by " + pd.agent.toUpperCase() + " from verified calculator state. It states no new date or price.",
+      facts: ["Prepared in this conversation at your request."], unknowns: ["Whether the client has been contacted outside ROYAL"],
+      financial_impact: pd.amount || null, expected_result: "The client receives this message.", source: "calculator", dedupe_key: "send:" + pd.project_id + ":" + pd.body.length + ":" + pd.purpose } });
+  if (r.status !== "PENDING_APPROVAL")
+    return { status: RUN_STATUS.OK, summary: "I can't send that: " + (r.reason || r.status) + ". Nothing was sent.", findings: [], surface: { type: "text" } };
+  const canSend = ctx.flags && ctx.flags.agent_external_send && ctx.messenger;
+  return { summary: "That's a message to a client, so it needs your approval. It's in front of you now." +
+      (canSend ? "" : " Sending isn't connected yet: when you approve, the approval is recorded and someone on the team sends it."),
+    findings: [], pending_draft: null, surface: { type: "decision_pending", decision: r.decision } };
+});
+
+skill(meta("clear", "Clear", [], { purpose: "Return to a clean, ambient state and forget what this conversation was about.", permissions: [] }), async () =>
+  ({ summary: "Cleared.", findings: [], pending_draft: null, surface: { type: "cleared" } }));
+skill(meta("go_back", "Go Back", [], { purpose: "Return to the previous view.", permissions: [] }), async () =>
+  ({ summary: "", findings: [], surface: { type: "back" } }));
+
 /* --------------------------------------------------- outside the house --- */
 skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own domains: wealth, calendar, personal tasks.", sources: ["APPOINTMENT"], realm: "PERSONAL" }), async (ctx) => {
   const ds = ctx.domains.filter((d) => d.realm === "PERSONAL");

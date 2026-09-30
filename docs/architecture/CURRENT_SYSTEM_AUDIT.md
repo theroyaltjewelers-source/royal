@@ -60,3 +60,59 @@ Auditor: Claude, before any ROYAL code was written
 ## 6. Decision
 
 ROYAL is built as an **independent service and repository** (per Tahir, 2026-09-29), with the calculator exposing a controlled, read-only House API. See `DECISIONS.md` ADR-001 through ADR-004.
+
+---
+
+# Part 2. ROYAL itself, audited before the interaction rebuild
+
+Date: 2026-09-30. Read from the code at commit `19fb4d1`, not from memory.
+
+## What exists
+
+| Layer | Implementation | State |
+|---|---|---|
+| Stack | ES modules, zero runtime dependencies, no build step. Node 20+ server (`server/node.js`) or Deno (`server/deno.js`) over one fetch-standard handler. Deployed on Render. | Works |
+| Auth | ROYAL passcode, HMAC-signed 30-day sessions (`server/passcode.js`); Supabase tokens accepted for calculator ingest and owners | Works, tested |
+| Orchestrator | `core/royal.js`: normalize command, resolve entity, route, run skill, consult specialists in parallel through the gate, validate results, synthesise, audit | Works |
+| Realms | Business and Personal separated on the server (commands, conversations, decisions, activity, domains) | Works, tested |
+| Specialists | ACE, GRACE, LEDGER, FORGE, deterministic over calculator snapshots | Works |
+| Registry | `core/registry.js`, validated registration, realm wall | Works. HOUSE (brand and marketing) is **missing** |
+| Permissions, gate, decisions | Server-side classes, approval objects, executors, verification, idempotent dedupe | Works, tested |
+| Sources, freshness, evidence labels | `core/sources.js`, labels on every finding | Works |
+| Events | In-process bus, dedupe by key, snapshot diffs raise events | Works |
+| Language | Grok via chat completions, resilient request shape, Test Grok | Built; live use depends on the key |
+| Calculator | Pushed House API snapshots (`rtj.house.v1`) | Works when a signed-in calculator is open |
+| Web app | `web/app.js` (391 lines, one file): passcode sign-in, tabs (Home, Decisions, Activity, Agents, Systems), a Business/Personal toggle, command-center dashboard, fixed bottom command dock, browser speech input | Works, but it is the thing being replaced |
+| Tests | 81 node tests plus calculator contract and embed checks | Pass |
+
+## What is partial
+
+(a) Conversation context resolves "his project" but not "he", "him" or "they", and a money question with a pronoun ("what does he owe?") is routed to the whole-House receivables list instead of the person under discussion.
+(b) There is no "Have GRACE prepare an update" or "Send it": drafts exist only inside "Handle it".
+(c) Skills return ad-hoc `surface` objects that only the current web app understands. No schema, no validation, no primitive vocabulary.
+(d) Voice is input only, through the browser's speech service. No spoken replies, no barge-in, no mute.
+(e) No boot sequence and no single place that reports what is actually true about ROYAL's own systems.
+
+## What is broken or wrong for the new direction
+
+(a) The primary experience is a dashboard: tabs, KPI tiles, a permanent system diagram, a permanent Ask bar. The product direction rejects all of these as the dominant hierarchy.
+(b) Lime is used as a general accent (buttons, borders, underlines), not as energy.
+(c) The command-center "network" is always on screen, so infrastructure is permanently visible.
+
+## What is preserved
+
+Everything under `core/`, `realms/`, `skills/` and `server/`: auth, realms, permissions, decisions, executors, audit, events, sources, connector, specialists, Grok. Their tests are the regression gate for the rebuild.
+
+## What is replaced
+
+`web/index.html`, `web/app.js` and `web/styles.css`. The dashboard views survive as secondary surfaces, reachable from a quiet menu and the keyboard, not as the home.
+
+## What is missing and gets built
+
+Intent grammar with structured output; pronoun and money follow-ups; delegate-and-draft and send-pending skills; the HOUSE agent registered honestly as not connected; a server-side UI Composer with a validated primitive schema; a boot endpoint that reports only true states; the living Core with a state machine, quality tiers and a 2D fallback; a primitive renderer; delegation visuals driven by real delegation records; spoken replies with barge-in and mute; a restrained audio and haptic layer.
+
+## What is risky
+
+(a) WebGL on low-end phones: mitigated by quality tiers, a frame budget, a 2D fallback and reduced motion.
+(b) Browser speech recognition sends audio to the browser vendor's service and is missing in some browsers: labelled in the interface, feature-detected, typing always available.
+(c) The Render instance has no disk yet, so decisions and snapshots are lost on restart. Unchanged by this rebuild; flagged again.

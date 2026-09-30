@@ -86,7 +86,36 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
 
     try {
       if (req.method === "GET" && path === "/v1/status") return json(req, 200, { ok: true, ...(await royal.status()), user: { id: user.id } });
-      if (req.method === "GET" && path === "/v1/agents") return json(req, 200, { ok: true, agents: royal.agents() });
+      if (req.method === "GET" && path === "/v1/agents") {
+        /* Registry metadata plus what the audit log actually shows each agent did last. */
+        const log = await royal.audit.developerLog({ limit: 2000 });
+        const agents = royal.agents().map((a) => {
+          const last = log.find((e) => e.agent === a.id);
+          return { id: a.id, name: a.name, role: a.role, capabilities: a.capabilities || [], status: a.status, permission_profile: a.permission_profile,
+            available_tools: a.allowed_tools, realms: a.realms, version: a.version, description: a.description,
+            last_activity: last ? { at: last.at, action: last.action } : null, current_task: null,
+            health: a.status !== "ACTIVE" ? "NOT_CONNECTED" : (last && /FAILED|DENIED/.test(last.action) ? "DEGRADED" : "OK") };
+        });
+        return json(req, 200, { ok: true, agents });
+      }
+      /* Boot: only states that are actually true right now. */
+      if (req.method === "GET" && path === "/v1/boot") {
+        const st = await royal.status();
+        const agents = royal.agents().filter((a) => a.id !== "royal");
+        const active = agents.filter((a) => a.status === "ACTIVE").length;
+        const lines = [
+          { k: "IDENTITY", v: "VERIFIED", ok: true },
+          { k: "AUTHORITY", v: user.role === "owner" ? "OWNER" : user.role.toUpperCase(), ok: user.role === "owner" },
+          { k: "PROJECT SYSTEM", v: st.calculator.connected ? "CONNECTED" : "NOT CONNECTED", ok: !!st.calculator.connected, detail: st.calculator.connected ? st.calculator.age : null },
+          { k: "AGENT NETWORK", v: active + " OF " + agents.length + " ACTIVE", ok: active > 0 },
+          { k: "LANGUAGE", v: st.provider.status === "CONNECTED" ? "CONNECTED" : st.provider.status === "DEGRADED" ? "DEGRADED" : "NOT CONNECTED", ok: st.provider.status === "CONNECTED" },
+          { k: "EVENT STREAM", v: "ACTIVE", ok: true },
+          { k: "MEMORY", v: royal.store.durable ? "DURABLE" : "TEMPORARY", ok: !!royal.store.durable, detail: royal.store.durable ? null : "Lost when the server restarts" },
+          { k: "PERMISSIONS", v: "ENFORCED", ok: true },
+          { k: "AUDIT", v: "ACTIVE", ok: true },
+        ];
+        return json(req, 200, { ok: true, lines, realm_domains: royal.domains() });
+      }
       if (req.method === "GET" && path === "/v1/skills") return json(req, 200, { ok: true, skills: royal.skills() });
       const realmQ = url.searchParams.get("realm") || undefined;
       if (realmQ && ["BUSINESS", "PERSONAL"].indexOf(realmQ) < 0) return fail(req, 400, "BAD_REALM", "Realm must be BUSINESS or PERSONAL.");

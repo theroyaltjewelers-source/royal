@@ -247,3 +247,23 @@ test("a result claiming VERIFIED with no source is invalid", () => {
   const r = agentResult({ agent: "grace", run_id: "r", findings: [{ title: "x", priority: "P2", risk: "YELLOW", need: "KNOW", evidence: { label: "VERIFIED" } }] });
   assert.equal(validateResult(r).ok, false);
 });
+
+
+/* ---------------------------------------------------------- UI Composer -- */
+import { validateSpec } from "../web/js/schema.js";
+test("the presentation schema rejects unknown primitives, extra fields and executable content", () => {
+  const base = { version: 1, mode: "answer", speech: "x", agents: [], surfaces: [] };
+  assert.equal(validateSpec({ ...base, mode: "hack" }).ok, false);
+  const v = validateSpec({ ...base, surfaces: [
+    { type: "SCRIPT", data: { code: "alert(1)" } },
+    { type: "STATEMENT", data: { text: "ok", onclick: "alert(1)" } },
+    { type: "STATEMENT", data: { text: 5 } },
+    { type: "STATEMENT", data: { text: "fine" } },
+  ] });
+  assert.equal(v.ok, true); assert.equal(v.spec.surfaces.length, 1); assert.equal(v.rejected.length, 3);
+  assert.equal(v.spec.surfaces[0].data.text, "fine");
+});
+test("agent nodes in a spec only carry known states", () => {
+  const v = validateSpec({ version: 1, mode: "answer", speech: "", surfaces: [], agents: [{ id: "grace", state: "reported" }, { id: "x", state: "hacking" }] });
+  assert.deepEqual(v.spec.agents.map((a) => a.id), ["grace"]);
+});

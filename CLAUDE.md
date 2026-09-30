@@ -32,6 +32,16 @@ Read this before changing anything.
 
 (f) House writing style for docs and copy: no em dashes, prose-forward, lettered clauses in policy documents.
 
+## The interface (web/)
+
+(a) The page never draws what the server did not send. Answers arrive as a presentation spec built by `core/composer.js` from primitives in `web/js/schema.js`. A new kind of thing on screen means a new primitive, schema, renderer and composer mapping, in that order.
+
+(b) The Core shows only true states (`web/js/state.js`). Agent nodes only for real delegations. Never add a decorative state.
+
+(c) No inline script, style or `style="..."` anywhere: the CSP forbids them and `tests/web.test.js` checks. Set CSS variables through `el.style.setProperty`.
+
+(d) Check changes in a browser at phone and desktop sizes, with reduced motion and without WebGL. See `docs/architecture/ROYAL_INTERACTION_ARCHITECTURE.md`.
+
 ## What is known to be wrong or missing
 
 (a) Stores: memory and JSON file only. Multi-instance needs the Postgres store.
