@@ -12,11 +12,18 @@ const CONVO = "web-" + Math.random().toString(36).slice(2, 10);
 
 /* -------------------------------------------------------------- auth --- */
 async function boot() {
+  /* Arriving from the calculator's ROYAL button: the calculator hands over
+     its own session in the URL fragment (never sent to any server). Taken
+     once, then wiped from the address bar and history. */
+  const hand = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const handoff = hand.get("access_token") && hand.get("refresh_token") ? { access_token: hand.get("access_token"), refresh_token: hand.get("refresh_token") } : null;
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   if (CFG.IDENTITY_URL && CFG.IDENTITY_ANON_KEY) {
     try {
       await new Promise((ok, no) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
     } catch (_) { return showSignIn("The sign-in library could not load. Check your connection and reload."); }
-    SUPA = window.supabase.createClient(CFG.IDENTITY_URL, CFG.IDENTITY_ANON_KEY);
+    SUPA = window.supabase.createClient(CFG.IDENTITY_URL, CFG.IDENTITY_ANON_KEY, { auth: { detectSessionInUrl: false } });
+    if (handoff) { const h = await SUPA.auth.setSession(handoff); if (h.error) $("signinStatus").textContent = "The hand-off from the calculator did not work: " + h.error.message; }
     const { data } = await SUPA.auth.getSession();
     if (data && data.session) TOKEN = data.session.access_token;
     SUPA.auth.onAuthStateChange((_e, s) => { TOKEN = s ? s.access_token : null; });
@@ -41,7 +48,21 @@ $("signinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = $("signinEmail").value.trim(); if (!email || !SUPA) return;
   const r = await SUPA.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
-  $("signinStatus").textContent = r.error ? "That did not work: " + r.error.message : "A sign-in link is on its way to " + email + ".";
+  $("signinStatus").textContent = r.error ? "That did not work: " + r.error.message : "Sign-in email sent to " + email + ". Use the 6-digit code in it below, or the link.";
+  if (!r.error) { $("codeForm").hidden = false; $("signinCode").focus(); }
+});
+/* A code typed here signs in to ROYAL directly, whatever address the email's
+   link points at. */
+$("codeForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("signinEmail").value.trim(), token = $("signinCode").value.trim();
+  if (!email || !token || !SUPA) return;
+  const r = await SUPA.auth.verifyOtp({ email, token, type: "email" });
+  if (r.error || !r.data || !r.data.session) { $("signinStatus").textContent = "That code did not work: " + ((r.error && r.error.message) || "no session") + ". Request a new email and use the newest code."; return; }
+  TOKEN = r.data.session.access_token;
+  const st = await api("GET", "/v1/status");
+  if (!st.ok) return showSignIn(st.message);
+  start(st);
 });
 $("devForm").addEventListener("submit", (e) => {
   e.preventDefault(); TOKEN = $("devToken").value.trim();
