@@ -33,7 +33,8 @@ const itemPrim = (i) => ({ type: KIND[i.kind] || "RISK_OBJECT", data: item(i) })
 
 const REV = { REVERSIBLE: "Reversible", PARTIALLY_REVERSIBLE: "Partly reversible", DIFFICULT_TO_REVERSE: "Hard to reverse", IRREVERSIBLE: "Cannot be undone" };
 export function decisionPrim(d) {
-  const draft = d.action && d.action.args && d.action.args.draft && d.action.args.draft.body;
+  const dr = d.action && d.action.args && d.action.args.draft;
+  const draft = dr && dr.body ? (dr.subject ? "Subject: " + dr.subject + "\n\n" : "") + dr.body : undefined;
   const exec = d.execution ? (d.execution.result === "NO_EXECUTOR" ? "Approved and recorded. " + (d.execution.next_action || "") : d.execution.result + (d.execution.failed_because ? ": " + d.execution.failed_because : "")) : undefined;
   return { type: "DECISION_OBJECT", data: clean({ id: s(d.id, 80), type: s(d.type, 40), title: s(d.title, 300), status: s(d.status, 20), priority: s(d.priority, 4), risk: s(d.risk, 8),
     why: s(d.reasoning_summary || d.description, 1000), requested_by: s(String(d.requested_by_agent || "").toUpperCase(), 40), source: s(d.source, 80),
@@ -45,6 +46,18 @@ export function decisionPrim(d) {
 }
 
 function money(v) { return "$" + Math.round(v || 0).toLocaleString("en-US"); }
+
+function hostName(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (_) { return ""; } }
+function sourcePrim(x) {
+  return clean({ title: s(x.title, 300), domain: s(hostName(x.url) || "unknown", 200), url: /^https?:\/\//i.test(String(x.url || "")) ? s(x.url, 800) : "",
+    retrieved: x.retrieved_at ? s(new Date(x.retrieved_at).toISOString().slice(0, 10), 80) : undefined, kind: s(x.quality && x.quality.kind, 40), confirmed: x.confirmed ? true : undefined });
+}
+function claimPrim(c) {
+  return clean({ text: s(c.value, 600), label: s(c.label, 40), confidence: s(c.confidence, 10), sources: (c.sources || []).slice(0, 6).map(sourcePrim), note: s(c.notes, 600) });
+}
+function planPrim(p) {
+  return { type: "PLAN_OBJECT", data: { goal: s(p.goal, 200), steps: (p.steps || []).slice(0, 20).map((x) => ({ text: s(x.why, 300), requires: s(x.requires, 20), available: !!x.available })) } };
+}
 
 /* surface type -> {mode, surfaces} */
 function fromSurface(sf, result) {
@@ -116,6 +129,50 @@ function fromSurface(sf, result) {
         .concat((sf.pending || []).slice(0, 6).filter((p) => p.result && p.result.decision).map((p) => decisionPrim(p.result.decision))) };
     case "message_draft":
       return { mode: "draft", focus: sf.entity, surfaces: [{ type: "MESSAGE_VIEW", data: clean({ to: s(sf.to, 200), purpose: s(sf.purpose, 200), body: s(sf.body, 4000), by: s(sf.by, 40), label: "RECOMMENDATION" }) }] };
+    case "calc":
+      return { mode: "answer", surfaces: [{ type: "STATEMENT", data: { text: s(sf.formatted, 200), tone: "calm", evidence: { label: "VERIFIED", source: "calculation", note: s(sf.expression, 300) } } }] };
+    case "world":
+      return { mode: "answer", surfaces: [{ type: "STATEMENT", data: clean({ text: s(result.summary, 2000), evidence: { label: s(sf.label, 40), note: s(sf.note, 300) } }) }] };
+    case "knowledge":
+      return { mode: "knowledge", surfaces: [{ type: "KNOWLEDGE_OBJECT", data: clean({ answer: s(sf.answer, 1500), label: s(sf.label || "VERIFIED_INTERNAL", 40),
+        passages: (sf.passages || []).slice(0, 5).map((p) => clean({ citation: s(p.citation, 300), text: s(p.text, 1000), status: s(p.status, 20), binding: typeof p.binding === "boolean" ? p.binding : undefined, synthetic: p.synthetic || undefined })),
+        unknowns: (sf.unknowns || []).slice(0, 4).map((u) => s(u, 300)) }) }] };
+    case "research": {
+      const r = sf.report;
+      return { mode: "research", surfaces: [{ type: "RESEARCH_OBJECT", data: clean({ question: s(r.question, 1000), answer: s(r.answer, 2000), confidence: s(r.confidence, 10),
+        claims: (r.claims || []).slice(0, 10).map(claimPrim), conflicts: (r.conflicts || []).slice(0, 5).map((c) => s(c.summary, 800)), unknowns: (r.unknowns || []).slice(0, 8).map((u) => s(u, 300)),
+        sources: (r.sources || []).slice(0, 12).map(sourcePrim), retrieved: r.retrieved_at ? s(new Date(r.retrieved_at).toISOString().slice(0, 16).replace("T", " ") + " UTC", 80) : undefined,
+        note: r.stale ? "From expired research." : r.from_cache ? "From earlier research." : undefined }) }] };
+    }
+    case "person":
+    case "contact": {
+      const p = sf.person || {}, co = sf.company || { name: p.company };
+      const c = sf.contact;
+      return { mode: "person", surfaces: [{ type: "PERSON_OBJECT", data: clean({ name: s(p.name, 160), title: s(p.title, 200), role: s(sf.role && sf.role.name, 80), company: s(co.name || p.company || "", 200),
+        domain: s(co.domain || p.domain, 200), since: s(p.since, 40), label: s(p.label || (p.name ? "REPORTED_UNVERIFIED" : "UNKNOWN"), 40), confidence: s(p.identity_confidence, 10),
+        confirmed_on: s(p.confirmed_on && hostName(p.confirmed_on), 200), email: s(c ? c.email : p.email, 200), email_status: s(c ? c.status : p.email_status, 40),
+        email_note: s(c ? [c.verification && c.verification.note].concat(c.notes || []).filter(Boolean).join(" ") : undefined, 500),
+        others: (sf.candidates || []).slice(0, 6).map((x) => clean({ name: s(x.name, 160), title: s(x.title, 200), note: s(x.match_note, 200) })),
+        conflict: s(sf.conflict && sf.conflict.summary, 800), sources: (p.sources || []).slice(0, 8).map(sourcePrim) }) }] };
+    }
+    case "company_choice":
+      return { mode: "clarify", surfaces: [{ type: "STATEMENT", data: { text: s("Which one: " + (sf.candidates || []).map((c) => c.name + (c.domain ? " (" + c.domain + ")" : "")).join("; ") + "?", 2000), tone: "attention" } }] };
+    case "email_draft": {
+      const d = sf.draft;
+      return { mode: "draft", surfaces: [{ type: "MESSAGE_VIEW", data: clean({ to: s(d.to_name, 200), purpose: s(d.objective, 200), body: s(d.body, 4000), by: s(String(d.agent || "ace").toUpperCase(), 40),
+        label: "RECOMMENDATION", subject: s(d.subject, 200), address: s(d.to, 200), address_status: s(d.to_status, 40), method: s(d.method, 20) }) }] };
+    }
+    case "sources":
+      return { mode: "research", surfaces: [{ type: "SOURCE_LIST", data: { sources: (sf.sources || []).slice(0, 20).map(sourcePrim), claims: (sf.claims || []).slice(0, 8).map(claimPrim) } }] };
+    case "prospects":
+      return { mode: "research", surfaces: [{ type: "PROSPECT_LIST", data: { note: "Nothing here is in a CRM. People are reported by sources unless marked verified.",
+        items: (sf.items || []).slice(0, 10).map((i) => clean({ company: s(i.company, 160), domain: s(i.domain, 160), why: s(i.why, 400), person: s(i.person, 160), title: s(i.title, 200), label: s(i.label, 40),
+          sources: (i.sources || []).slice(0, 4).map(sourcePrim) })) } }].concat(sf.plan ? [planPrim(sf.plan)] : []) };
+    case "plan":
+      return { mode: "plan", surfaces: sf.plan ? [planPrim(sf.plan)] : [] };
+    case "task":
+      return { mode: "answer", surfaces: [{ type: "TASK_OBJECT", data: clean({ agent: s(String(sf.task.agent).toUpperCase(), 40), objective: s(sf.task.objective, 500), status: s(sf.task.status, 30),
+        created: s(new Date(sf.task.created_at).toISOString().slice(0, 16).replace("T", " ") + " UTC", 80) }) }] };
     case "realm_switch":
       return { mode: "answer", surfaces: [] };
     case "cleared":

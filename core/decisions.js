@@ -20,6 +20,7 @@ const TOOL_TO_DECISION = {
   vendor_payment: DECISION_TYPE.VENDOR_PAYMENT, change_project_price: DECISION_TYPE.PRICING_EXCEPTION,
   approve_rush_request: DECISION_TYPE.RUSH_REQUEST, production_change: DECISION_TYPE.PRODUCTION_CHANGE,
   deploy_production: DECISION_TYPE.DEPLOYMENT, change_policy: DECISION_TYPE.POLICY_CHANGE,
+  send_email: DECISION_TYPE.SEND_EXTERNAL_EMAIL, create_crm_lead: DECISION_TYPE.CRM_WRITE,
 };
 
 export class DecisionService {
@@ -39,9 +40,26 @@ export class DecisionService {
     for (const f of ["type", "title", "requested_by_agent"]) if (!d[f]) throw new Error("DECISION_INVALID: " + f + " is required");
     if (!DECISION_TYPE[d.type]) throw new Error("DECISION_INVALID: unknown type " + d.type);
     const key = d.dedupe_key || stableHash({ t: d.type, a: d.action || null, p: d.related_project_id || null, title: d.title });
-    const id = "dec_" + stableHash(key);
-    const existing = await this.store.get("decisions", id);
+    let id = "dec_" + stableHash(key);
+    let existing = await this.store.get("decisions", id);
     if (existing && existing.data.status === S.OPEN) return { created: false, decision: existing.data };
+    /* An approved or carried-out decision is never reopened: asking again for
+       the same action returns it as already decided, so an email cannot be
+       sent twice by saying "send it" twice.  A rejected, withdrawn or failed
+       one may be asked again, under a new identity, so its record is kept. */
+    if (existing && [S.APPROVED, S.MODIFIED, S.EXECUTED, S.VERIFIED].indexOf(existing.data.status) >= 0) return { created: false, decision: existing.data, already_decided: true };
+    if (existing) {
+      let free = null;
+      for (let n = 2; n < 50 && !free; n++) {
+        const alt = "dec_" + stableHash(key + "#" + n), cur = await this.store.get("decisions", alt);
+        if (!cur) { free = alt; break; }
+        if (cur.data.status === S.OPEN) return { created: false, decision: cur.data };
+        if ([S.APPROVED, S.MODIFIED, S.EXECUTED, S.VERIFIED].indexOf(cur.data.status) >= 0) return { created: false, decision: cur.data, already_decided: true };
+      }
+      /* Never overwrite an earlier record, even after many re-asks. */
+      if (!free) return { created: false, decision: existing.data, exhausted: true };
+      id = free; existing = null;
+    }
 
     const rec = {
       id, dedupe_key: key, type: d.type, title: d.title, description: d.description || "",
@@ -57,8 +75,6 @@ export class DecisionService {
       status: S.OPEN, created_at: this.clock(), resolved_at: null, resolved_by: null, resolution: null,
       execution: null,
     };
-    /* Reopening a closed decision with the same key keeps its history under a
-       new revision rather than a new identity. */
     const w = await this.store.put("decisions", id, rec, existing ? existing.rev : null);
     if (!w.ok) return { created: false, decision: w.current && w.current.data, conflict: true };
     await this.audit.record({ actor: d.requested_by_agent, agent: d.requested_by_agent, action: "DECISION_CREATED",
@@ -68,6 +84,17 @@ export class DecisionService {
   }
 
   async get(id) { const r = await this.store.get("decisions", id); return r ? r.data : null; }
+
+  /* Withdraw an open decision that no longer describes what would happen
+     (for example, the draft it would send has since been rewritten). */
+  async cancel(id, reason) {
+    const cur = await this.store.get("decisions", id);
+    if (!cur || cur.data.status !== S.OPEN) return { ok: false };
+    const d = { ...clone(cur.data), status: S.CANCELLED, resolved_at: this.clock(), resolution: { kind: "CANCELLED", note: String(reason || "").slice(0, 300) } };
+    const w = await this.store.put("decisions", id, d, cur.rev);
+    if (w.ok) await this.audit.record({ actor: "royal", action: "DECISION_CANCELLED", summary: d.title + ": withdrawn (" + (reason || "superseded") + ")", executive: true, key: id });
+    return { ok: w.ok, decision: d };
+  }
 
   async list({ status, realm } = {}) {
     const all = (await this.store.list("decisions")).map((r) => r.data).filter((d) => !realm || (d.realm || "BUSINESS") === realm);
@@ -111,7 +138,8 @@ export class DecisionService {
         const r = await fn(d.action.args || {}, { decision: d });
         let verified = null;
         if (r && typeof r.verify === "function") {
-          try { verified = !!(await r.verify()); } catch (e) { verified = false; }
+          /* true: checked and confirmed; false: checked and wrong; null: could not be checked yet */
+          try { const v = await r.verify(); verified = v === null || v === undefined ? null : !!v; } catch (e) { verified = false; }
         }
         execution = { result: r && r.ok ? "EXECUTED" : "FAILED", detail: r && r.detail || null,
           failed_because: r && !r.ok ? (r.failed_because || "EXECUTOR_REPORTED_FAILURE") : null, verified };
@@ -166,7 +194,7 @@ export class ConsequenceGate {
         reversibility: pol.reversibility, action: { tool, args, domain: domain || null },
         ...tmpl,
       });
-      return { status: "PENDING_APPROVAL", decision: r.decision, created: r.created };
+      return { status: "PENDING_APPROVAL", decision: r.decision, created: r.created, already_decided: !!r.already_decided };
     }
     await this.audit.record({ agent: agentId, actor: agentId, run_id, action: "PERMISSION_DENIED", tool, permission: verdict,
       summary: agentId + " was refused " + tool + " (" + verdict.reason + ")", executive: verdict.reason === "PROHIBITED" });

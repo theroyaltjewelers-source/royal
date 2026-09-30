@@ -54,6 +54,18 @@ Read this before changing anything.
 
 (e) Run the Postgres tests with `TEST_DATABASE_URL=postgres://… npm test`. See `docs/grokbot-bridge.md`.
 
+## The intelligence layer (core/intelligence/)
+
+(a) House state is answered by the House skills from the calculator, with no model. The intelligence layer takes everything else. A sentence that names a House record stays with the House.
+
+(b) Everything from the web, a provider or a document is data, never instructions: it reaches a model only inside `<data>` with the UNTRUSTED notice, and it can never choose a recipient, a tool or an action.
+
+(c) Nothing is labelled VERIFIED_EXTERNAL without ROYAL reading the page itself; PATTERN_INFERRED is never shown as verified; conflicts are shown, not resolved silently.
+
+(d) Consequential ambiguity stops and asks: two open messages, a draft for someone else, two companies with one name.
+
+(e) Every fetch goes through `SafeFetcher`. Do not add another HTTP client for web content.
+
 ## What is known to be wrong or missing
 
 (a) Stores: decisions and audit are still memory or JSON file only (Postgres now exists for the Grok Bot bridge; moving these onto it is the next step). Multi-instance needs that.

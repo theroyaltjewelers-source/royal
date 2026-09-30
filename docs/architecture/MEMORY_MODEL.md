@@ -1,5 +1,7 @@
 # MEMORY MODEL
 
+Superseded by MEMORY_ARCHITECTURE.md.
+
 Four layers, never mixed.
 
 | Layer | What | Where | Lifetime | Is it evidence? |

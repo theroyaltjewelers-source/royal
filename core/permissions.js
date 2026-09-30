@@ -23,12 +23,24 @@ export const TOOL_POLICY = deepFreeze({
   get_sales_pipeline:      { cls: P.READ, rev: R.REVERSIBLE },
   get_decisions:           { cls: P.READ, rev: R.REVERSIBLE },
   get_system_status:       { cls: P.READ, rev: R.REVERSIBLE },
+  /* intelligence: reading the world and the House's own documents */
+  web_search:              { cls: P.READ, rev: R.REVERSIBLE, external_read: true },
+  web_fetch:               { cls: P.READ, rev: R.REVERSIBLE, external_read: true },
+  x_search:                { cls: P.READ, rev: R.REVERSIBLE, external_read: true },
+  company_search:          { cls: P.READ, rev: R.REVERSIBLE, external_read: true },
+  person_search:           { cls: P.READ, rev: R.REVERSIBLE, external_read: true },
+  email_find:              { cls: P.READ, rev: R.REVERSIBLE, external_read: true, paid: true },
+  email_verify:            { cls: P.READ, rev: R.REVERSIBLE, external_read: true, paid: true },
+  knowledge_search:        { cls: P.READ, rev: R.REVERSIBLE },
+  calculate:               { cls: P.ANALYZE, rev: R.REVERSIBLE },
   /* analysis */
   analyze_project_risk:    { cls: P.ANALYZE, rev: R.REVERSIBLE },
   get_production_risk:     { cls: P.ANALYZE, rev: R.REVERSIBLE },
   /* drafts: produce text, send nothing */
   draft_client_update:     { cls: P.DRAFT, rev: R.REVERSIBLE },
   draft_client_message:    { cls: P.DRAFT, rev: R.REVERSIBLE },
+  draft_email:             { cls: P.DRAFT, rev: R.REVERSIBLE },
+  delegate_to_bot:         { cls: P.DRAFT, rev: R.REVERSIBLE },   /* asks an external Grok Bot for work; its reply is a record only */
   /* ROYAL's own records */
   request_approval:        { cls: P.INTERNAL_WRITE, rev: R.REVERSIBLE, alwaysAllowed: true },
   create_internal_task:    { cls: P.INTERNAL_WRITE, rev: R.REVERSIBLE },
@@ -36,6 +48,8 @@ export const TOOL_POLICY = deepFreeze({
   record_waiting:          { cls: P.INTERNAL_WRITE, rev: R.REVERSIBLE },
   /* consequential: never without Tahir */
   send_client_message:     { cls: P.APPROVAL_REQUIRED, rev: R.IRREVERSIBLE, external: true },
+  send_email:              { cls: P.APPROVAL_REQUIRED, rev: R.IRREVERSIBLE, external: true },
+  create_crm_lead:         { cls: P.APPROVAL_REQUIRED, rev: R.REVERSIBLE },
   issue_refund:            { cls: P.APPROVAL_REQUIRED, rev: R.DIFFICULT_TO_REVERSE, external: true, money: true },
   vendor_payment:          { cls: P.APPROVAL_REQUIRED, rev: R.DIFFICULT_TO_REVERSE, external: true, money: true },
   change_project_price:    { cls: P.APPROVAL_REQUIRED, rev: R.PARTIALLY_REVERSIBLE },
@@ -58,6 +72,15 @@ export const DEFAULT_FLAGS = deepFreeze({
   automated_followup: false,
   production_risk_engine: true,  /* read-only analysis, safe */
   llm_synthesis: true,           /* use the model when one is connected */
+  /* intelligence layer: read-only research is on (it still needs a provider
+     key); anything that costs per call, reaches people, or is incomplete is off */
+  web_research: true,
+  x_search: false,
+  people_research: true,
+  email_discovery: false,        /* paid contact providers (Hunter, Apollo) */
+  email_verification: false,     /* paid verification (Hunter) */
+  realtime_voice: false,         /* xAI realtime voice; needs XAI_API_KEY */
+  advanced_agent_orchestration: false,  /* delegating to external Grok Bots from ROYAL's router */
 });
 
 const WILDCARD = { [P.READ]: "*read", [P.ANALYZE]: "*analyze", [P.DRAFT]: "*draft" };

@@ -1,12 +1,63 @@
 # VOICE ARCHITECTURE
 
-Supersedes VOICE_FUTURE.md for the web client. `web/js/voice.js`.
+Supersedes VOICE_FUTURE.md for the web client. Browser speech: `web/js/voice.js`. Realtime voice: `web/js/realtime.js`, `web/js/pcm-worklet.js`, `POST /v1/voice/session` in `server/handler.js`. Updated 30 September 2026 from the code on branch feature/intelligence, after the security review.
 
 ## 1. Principle
 
-Voice is another way into the same ROYAL. A spoken sentence becomes a command with `modality: "voice"` and goes through the same interpreter, permission gate, composer and audit as typing.
+Voice is another way into the same ROYAL. A spoken sentence becomes a command with `modality: "voice"` and goes through the same interpreter, permission gate, composer and audit as typing. This holds for both voice paths: the realtime voice model only speaks and listens, and asks ROYAL for every answer.
 
-## 2. Input
+## 2. Two Paths
+
+| Path | When it is used | Recognition | Speech |
+|---|---|---|---|
+| Realtime voice | `intelligence.status().realtime_voice` is AVAILABLE: flag `realtime_voice` on and the provider reports `realtime_voice` (`XAI_API_KEY` set) | xAI realtime voice, server-side voice activity detection | xAI realtime voice, streamed PCM |
+| Browser speech | Every other case, and whenever realtime cannot start | The browser's `SpeechRecognition` | The browser's `speechSynthesis` |
+
+`web/js/app.js#loadIntelligence` reads `/v1/intelligence/status` after sign-in and creates a `RealtimeVoice` only when it says AVAILABLE. `realtime_voice` is off by default (`DEFAULT_FLAGS`, `core/permissions.js`), so the default is browser speech. With the flag on but no key, the status is NOT_CONFIGURED.
+
+## 3. Realtime Voice
+
+**Session token.** `POST /v1/voice/session?realm=<REALM>` (owner only):
+
+(a) Flag off: 409 `VOICE_DISABLED`.
+
+(b) `realm=PERSONAL`: 409 `VOICE_BUSINESS_ONLY`, "Realtime voice is available on the Business side only. The browser's own speech works in Personal." The realtime voice model hears the conversation, so it is offered for Business only and nothing from the Personal side reaches it. A realm other than BUSINESS or PERSONAL is refused earlier with 400 `BAD_REALM`; a request with no realm is treated as Business.
+
+(c) No `voiceSession` on the provider, or no `realtime_voice` capability: 409 `VOICE_NOT_CONFIGURED`, "Realtime voice needs XAI_API_KEY on the server."
+
+(d) Otherwise `GrokProvider.voiceSession({ seconds: 600 })` (`core/providers/grok.js`) calls `POST https://api.x.ai/v1/realtime/client_secrets` with `expires_after.seconds` clamped to 60 to 1800. A failure returns 502 with xAI's reason.
+
+(e) On success the route audits `VOICE_SESSION` and returns `token, expires_at, ws_url` (`wss://api.x.ai/v1/realtime?model=<ROYAL_VOICE_MODEL>`, default `grok-voice-latest`), `model`, and `session` from `voiceSessionConfig(voice)` (voice from `ROYAL_VOICE`, default `eve`). The API key never leaves the server; the browser holds only the short-lived token.
+
+**Session configuration** (`server/handler.js#voiceSessionConfig`): server VAD turn detection; PCM at 24 kHz in and out; instructions to be calm and brief, to call `ask_royal` for anything about the House, the world, people, drafts, sending or any action, never to answer those from its own knowledge, never to say anything was sent, done or approved unless `ask_royal` says so, and that approvals happen on screen, never by voice. One tool: `ask_royal({ request })`.
+
+**Client** (`web/js/realtime.js#RealtimeVoice.start`):
+
+(a) Asks for the session, passing the page's current realm (`realm: () => REALM` from `app.js`, sent as `?realm=`). If refused, sets state `unavailable`, reports the server's message, and returns false.
+
+(b) Opens the microphone with echo cancellation, noise suppression and auto gain. A blocked microphone is reported plainly and returns false.
+
+(c) Creates an `AudioContext` at 24 kHz and loads `js/pcm-worklet.js`. The worklet (`RoyalPcm`, registered as `royal-pcm`) posts 20 ms mono frames; `toPcm16` resamples to 24 kHz PCM16 and each frame is sent as `input_audio_buffer.append`.
+
+(d) Opens the WebSocket at `ws_url` with subprotocol `xai-client-secret.<token>` and sends `session.update` on open.
+
+(e) Handles `input_audio_buffer.speech_started`, input transcription deltas and completions (shown as heard text), `response.created`, `response.output_audio.delta` (played), `response.output_audio_transcript.delta` (caption), `response.done`, `response.function_call_arguments.done` (tool call) and `error`.
+
+**The tool loop.** On `ask_royal`, the client calls `askFromVoice` in `app.js`, which submits the words to `/v1/command` with modality `voice` and `speak: false`, shows ROYAL's answer on the stage like any other, and returns `{ say, status, needs_approval, note }` as the `function_call_output`, followed by `response.create`. `needs_approval` is true when the answer shows an OPEN decision. Any other tool name, or a missing request, gets "I couldn't use that tool."
+
+**Interruption.** When the provider reports `input_audio_buffer.speech_started`, `interrupt()` stops every scheduled audio buffer at once and, if a response is in progress, sends `response.cancel`. Touching the Core while realtime is live ends the session (`rt.stop()`).
+
+**Realm switch.** `switchRealm()` in `app.js` stops a live realtime session (`rt.stop()`) before it clears the stage, because a live voice conversation belongs to the room it started in. Starting voice again in Personal asks for a session with `realm=PERSONAL`, is refused, and falls through to browser speech.
+
+**Disconnection.** On close the client tears down the microphone, worklet and audio context, sets state `disconnected`, and the page says the conversation is kept and typing works. It does not reconnect on its own. The conversation lives in ROYAL, keyed by conversation id, so nothing is lost.
+
+**Fallback.** In `app.js#wake`, if `rt.start()` returns false, the touch falls through to browser speech. Realtime is also skipped while spoken replies are muted. While realtime is active, browser speech synthesis stays silent so ROYAL is not heard twice.
+
+**Content Security Policy.** `server/node.js` allows `connect-src wss://api.x.ai` for this socket.
+
+**Privacy.** In realtime mode the microphone audio goes from the browser directly to xAI.
+
+## 4. Browser Speech: Input
 
 (a) The browser's speech recognition, feature-detected. Partial transcripts appear above the caption as Tahir speaks; the final transcript is submitted.
 
@@ -18,22 +69,32 @@ Voice is another way into the same ROYAL. A spoken sentence becomes a command wi
 
 (e) Where recognition is missing (Firefox, some embedded browsers), touching the Core opens typing instead.
 
-(f) Privacy: in Chrome and Edge, recognition audio is processed by the browser vendor's speech service, not by ROYAL. This is stated here and should be stated to anyone else who uses ROYAL.
+(f) Privacy: in Chrome and Edge, recognition audio is processed by the browser vendor's speech service, not by ROYAL. This should be stated to anyone else who uses ROYAL.
 
-## 3. Output
+## 5. Browser Speech: Output
 
 (a) The browser's speech synthesis speaks ROYAL's sentence (the spec's `speech`). Dollar amounts are read as dollars. Word boundaries pulse the Core.
 
 (b) Spoken replies can be turned off (the corner mark or the menu). The words always remain on screen.
 
-## 4. Barge-in
+## 6. Browser Speech: Barge-in
 
 Touching the Core, pressing Escape, typing, or starting to listen stops ROYAL mid-sentence.
 
-## 5. Approval
+## 7. Approval
 
-A spoken "yes" never approves a decision. "Send it" by voice creates the decision; approving it is a deliberate touch on the decision itself.
+A spoken "yes" never approves a decision, on either path. "Send it" by voice creates the decision; approving it is a deliberate touch on the decision itself. See `APPROVAL_MODEL.md`.
 
-## 6. Next
+## 8. Flags
 
-Server-side recognition and a better voice (for example a streaming speech service behind ROYAL's server) would remove the dependence on the browser. That needs a new ADR, a key kept on the server, and the same "nothing pretends to have heard" rule.
+`realtime_voice` (default off) gates the realtime path. `voice_input` (default off) is reserved: no code reads it, and browser speech works regardless.
+
+## 9. What Is Tested, and What Is Not
+
+Tested (`tests/intelligence.test.js`, "realtime voice client: PCM conversion and the ask_royal tool loop"): PCM16 round trip and 48 kHz to 24 kHz resampling; an `ask_royal` call producing `function_call_output` with ROYAL's sentence, then `response.create`; `speech_started` during a response sending `response.cancel`; `start()` returning false when the server refuses a session. The socket is a fake.
+
+Tested through the handler (`tests/server.test.js`, "voice session: off by default, Business only, and only a short-lived token ever leaves"): 409 with the flag off; 409 `VOICE_BUSINESS_ONLY` for `realm=PERSONAL`; with the flag on and a fake xAI, `realm=BUSINESS` returns 200 with the short-lived token and without the API key.
+
+Untested without an `XAI_API_KEY`: the `client_secrets` request against the live service, the WebSocket subprotocol and event names, the audio worklet, playback scheduling, echo cancellation, real barge-in timing and dropped connections. `VOICE_NOT_CONFIGURED` and the 502 path have no test. The client's realm parameter and the stop on a realm switch have no automated test. Browser speech (`web/js/voice.js`) has no automated test.
+
+`RealtimeVoice.sayText()` (typing into the live voice conversation) exists but nothing calls it: typing while realtime is on goes to `/v1/command` as usual.

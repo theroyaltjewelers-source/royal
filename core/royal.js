@@ -26,6 +26,10 @@ import { SPECIALISTS, DEFAULT_OWNERS } from "../realms/business/royal-t/speciali
 import { diffSnapshots } from "../realms/business/royal-t/changes.js";
 import { SKILLS, skillCatalog } from "../skills/index.js";
 import { needsTahir } from "./attention.js";
+import { createIntelligence } from "./intelligence/index.js";
+import { emailExecutor } from "./intelligence/comms.js";
+import { defaultGateway } from "./intelligence/gateway.js";
+import { toolCatalog } from "./intelligence/tools.js";
 
 const MAX_COMMAND = 2000;
 const DELEGATION_TIMEOUT_MS = 8000;
@@ -42,7 +46,8 @@ export function normalizeCommand(input) {
     conversation_id: c.conversation_id || "default", timestamp: c.timestamp || Date.now() };
 }
 
-export function createRoyal({ store, provider = new UnavailableProvider(), flags = {}, clock = () => Date.now(), owners = DEFAULT_OWNERS, messenger = null, tzOffsetMin = -240 } = {}) {
+export function createRoyal({ store, provider = new UnavailableProvider(), flags = {}, clock = () => Date.now(), owners = DEFAULT_OWNERS, messenger = null, tzOffsetMin = -240,
+  knowledge = null, fetcher = null, hunter = null, apollo = null, email = null, bridge = null, metrics = null } = {}) {
   if (!store) throw new Error("ROYAL_CONFIG: a store is required");
   const F = { ...DEFAULT_FLAGS, ...flags };
   const registry = new AgentRegistry();
@@ -95,8 +100,20 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
 
   decisions.registerExecutor("create_internal_task", createTask);
   if (F.agent_external_send && messenger) decisions.registerExecutor("send_client_message", (args) => messenger.send(args));
+  /* External email is executed only when sending is switched on and a
+     provider is configured; otherwise an approval is recorded and nothing is sent. */
+  if (F.agent_external_send && email && email.configured()) decisions.registerExecutor("send_email", emailExecutor(email, { clock }));
 
   const gate = new ConsequenceGate({ permissions, decisions, audit, tools });
+
+  /* ---------------------------------------------------- intelligence --- */
+  const intelligence = createIntelligence({ provider, store, audit, gate, registry, decisions, flags: F, clock, knowledge, fetcher, hunter, apollo, email, bridge, metrics });
+  for (const [name, fn] of Object.entries(intelligence.toolImpls)) if (!tools.has(name)) tools.set(name, fn);
+  const gateway = defaultGateway({ connector, tools, clock, email, bridge, research: intelligence.research, contacts: intelligence.contacts });
+  const INTEL_EARLY = ["calculation", "show_sources", "cancel", "revise_draft", "people_research", "contact_lookup", "outreach_draft", "prospecting", "house_knowledge"];
+  const INTEL_ANY = INTEL_EARLY.concat(["world_knowledge", "current_research", "company_research", "send"]);
+  const INTEL_CONTROL = ["show_sources", "cancel", "revise_draft"];
+  const openDraft = (c) => c && c.active_draft && !c.active_draft.sent && !c.active_draft.cancelled;
 
   /* ------------------------------------------------------ delegation --- */
   function makeCtx(base) {
@@ -136,7 +153,9 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
 
   function domainState() {
     const calc = health.get("calculator");
-    return DOMAINS.map((d) => ({ ...d, status: d.id === "royal_t" ? (calc.status === CONNECTION.CONNECTED ? CONNECTION.CONNECTED : d.status) : d.status }));
+    const researchOn = intelligence && intelligence.research.status().status === "CONNECTED";
+    return DOMAINS.map((d) => ({ ...d, status: d.id === "royal_t" ? (calc.status === CONNECTION.CONNECTED ? CONNECTION.CONNECTED : d.status)
+      : d.id === "world" ? (researchOn ? CONNECTION.CONNECTED : d.status) : d.status }));
   }
 
   /* ---------------------------------------------------- open questions --- */
@@ -228,6 +247,31 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       : interpret(cmd.content, { entityResolved: res.status === "RESOLVED", entityStrong: !!res.strong, entityFromConversation: res.via === "conversation" });
     let r = { skill: intent.skill, reason: intent.reason, confidence: intent.confidence };
     if (!SKILLS[r.skill] && r.skill !== "open_question") r = { skill: "open_question", reason: "UNKNOWN_SKILL" };
+
+    /* The intelligence layer takes what the House skills don't: the world,
+       research, House knowledge, arithmetic, outreach, and sending the
+       outreach draft under discussion.  House state stays with the skills. */
+    let intel = null;
+    if (!cmd.skill) {
+      const pre = intelligence.preclassify(cmd.content, convo);
+      /* "Send it" with an outreach email open goes to the intelligence layer,
+         which asks which one when a House update is also waiting.  Naming
+         the update sends that instead. */
+      if (intent.skill === "send_pending" && openDraft(convo) && !(convo.pending_draft && /\b(update|message to|the (client|clients))\b/i.test(cmd.content)))
+        intel = { ...pre, intent: "send", interpreted_by: "rules" };
+      else if (intent.reason === "CONTROL") intel = null;
+      /* A sentence that names a House record stays with the House skills
+         ("20% of what Marcus owes", "find me leads for Marcus"), except for
+         the conversational controls, which act on what is under discussion. */
+      else if (INTEL_EARLY.indexOf(pre.intent) >= 0 && (INTEL_CONTROL.indexOf(pre.intent) >= 0 || !(res.status === "RESOLVED" && res.strong && res.via !== "conversation"))) intel = pre;
+      /* Questions about the world go out, unless they are plainly about a House record. */
+      else if ((pre.intent === "current_research" || pre.intent === "world_knowledge") && !(res.status === "RESOLVED" && res.strong) && !SKILLS[r.skill]) intel = pre;
+      else if (r.skill === "open_question") {
+        const m = await intelligence.classify(cmd.content, convo);
+        if (INTEL_ANY.indexOf(m.intent) >= 0) intel = m;
+      }
+      if (intel) await audit.record({ actor: "royal", run_id, action: "INTENT_CLASSIFIED", summary: intel.intent + " by " + intel.interpreted_by, result: intel.model_failed || "OK" });
+    }
     if (SKILLS[r.skill] && (SKILLS[r.skill].realm || REALM.BUSINESS) !== REALM.BUSINESS) {
       const res2 = agentResult({ agent: "royal", run_id, status: RUN_STATUS.OK, timestamp: clock(),
         summary: "That belongs to your Personal side. Switch to Personal to ask it; the Business side does not look at personal matters.",
@@ -253,6 +297,14 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
           surface: { type: "clarify", candidates: res.candidates.map((p) => ({ id: p.id, name: p.name, client_name: p.client && p.client.name, stage: p.stage })) } };
       } else if (res.status === "NOT_FOUND") {
         out = { status: RUN_STATUS.OK, summary: "No commission with ID " + res.query + " is in the calculator's records" + (latest ? "." : ", and the calculator is not connected."), findings: [], surface: { type: "text" } };
+      } else if (intel) {
+        out = await intelligence.handle(intel, { text: cmd.content, convo, run_id, conversation_id: convoKey });
+        if (!out) out = await openQuestion(cmd, ctx);
+        else { r = { skill: "intel:" + intel.intent, reason: intel.interpreted_by === "model" ? "MODEL" : "RULES", confidence: intel.confidence };
+          for (const d of out.delegations || []) ctx.delegations.push(d); }
+      } else if (r.skill === "delegate_draft" && intent.agent && registry.get(intent.agent) && registry.get(intent.agent).status !== "ACTIVE" && F.advanced_agent_orchestration && bridge) {
+        out = await intelligence.doBotDelegation(intent.agent, cmd.content, convo, convoKey);
+        for (const d of out.delegations || []) ctx.delegations.push(d);
       } else if (r.skill === "open_question") {
         out = await openQuestion(cmd, ctx);
       } else {
@@ -271,15 +323,26 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     result.delegations = ctx.delegations.map((d) => ({ agent: d.agent, status: d.status, verified: d.verified, errors: d.errors || [] }));
     result.entity = base.entity ? { type: "project", id: base.entity.id, name: base.entity.name, client_name: base.entity.client && base.entity.client.name } : null;
 
-    if (r.skill === "clear") conversations.set(convoKey, { entity: null, last_skill: null, last_items: [], pending_draft: null });
+    /* Every approval this conversation asked for, so "stop" can withdraw
+       whichever of them is still waiting. */
+    const asked = out.surface && out.surface.type === "decision_pending" && out.surface.decision ? [out.surface.decision.id] : [];
+    const open_decisions = (convo.open_decisions || []).concat(asked).filter((x, i, a) => a.indexOf(x) === i).slice(-20);
+    if (r.skill === "clear") conversations.set(convoKey, { entity: null, last_skill: null, last_items: [], pending_draft: null, active_draft: null, active_person: null,
+      active_company: null, active_project: null, last_research: null, prospects: null, focus: null, conversation_goal: null, open_decisions });
     else conversations.set(convoKey, {
       entity: base.entity ? { id: base.entity.id } : convo.entity,
+      active_project: base.entity ? { id: base.entity.id, name: base.entity.name, client_name: base.entity.client && base.entity.client.name } : convo.active_project || null,
       last_skill: r.skill === "handle_it" ? convo.last_skill : r.skill,
       last_items: r.skill === "handle_it" || r.skill === "go_back" ? convo.last_items || [] : (result.findings || []).slice(0, 12),
       /* A draft stays "the one under discussion" until it is sent, replaced or cleared. */
-      pending_draft: out.pending_draft !== undefined ? out.pending_draft : (convo.pending_draft || null),
+      pending_draft: out.pending_draft !== undefined ? (out.pending_draft ? { ...out.pending_draft, created_at: out.pending_draft.created_at || clock() } : null) : (convo.pending_draft || null),
+      /* Active context from the intelligence layer (people, companies, drafts, research). */
+      ...(out.context || {}),
+      open_decisions: out.context && out.context.open_decisions ? out.context.open_decisions : open_decisions,
+      focus: out.context && out.context.focus ? out.context.focus : (base.entity ? "house" : convo.focus || null),
     });
-    result.intent = { verb: intent.verb, agent: intent.agent || null };
+    result.intent = intel ? { verb: "INTEL", intent: intel.intent, interpreted_by: intel.interpreted_by, agent: (intel.entities && intel.entities.agent) || null } : { verb: intent.verb, agent: intent.agent || null };
+    if (out.reasoning) result.reasoning = out.reasoning;
     await attachPresentation(result, REALM.BUSINESS);
     await audit.record({ actor: "royal", run_id, trigger: cmd.modality, action: "COMMAND_ANSWERED", summary: r.skill + ": " + String(result.summary).slice(0, 160),
       entities: result.entities, result: result.status, executive: r.skill === "handle_it" });
@@ -294,6 +357,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       await events.publish({ type: "INTEGRATION_FAILED", key: "ingest-fail:" + stableHash(r.errors || r.failed_because) + ":" + Math.floor(clock() / 3600000), source: "calculator", payload: { errors: (r.errors || []).slice(0, 5) } });
       return r;
     }
+    if (r.changed) await events.publish({ type: "SNAPSHOT_INGESTED", key: "snapshot:" + r.digest, source: "calculator", payload: { projects: (snapshot.projects || []).length } });
     if (r.changed && before) {
       const d = diffSnapshots(before.snapshot, snapshot);
       for (const c of d.changes) { const e = eventForChange(c, r.digest); if (e) await events.publish(e); }
@@ -314,11 +378,27 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
 
   return {
     handle, ingestCalculator, registry, permissions, decisions, audit, events, connector, gate, store, health,
-    flags: F, provider,
+    flags: F, provider, intelligence, gateway, metrics,
+    tools: () => toolCatalog({ web_search: intelligence.research.status().status === "CONNECTED", x_search: !!(F.x_search && provider.capabilities && provider.capabilities().x_search),
+      company_search: intelligence.research.status().status === "CONNECTED", person_search: intelligence.research.status().status === "CONNECTED",
+      email_find: intelligence.contacts.status().discovery, email_verify: intelligence.contacts.status().verification, web_fetch: !!fetcher, knowledge_search: !!knowledge,
+      send_email: !!(F.agent_external_send && email && email.configured()), create_crm_lead: false,
+      delegate_to_bot: !bridge ? false : bridge.enabled && !bridge.enabled() ? "DISABLED" : F.advanced_agent_orchestration ? true : "DISABLED" },
+      { implemented: new Set([...tools.keys(), "x_search", "email_verify"]), executors: new Set([...decisions.executors.keys()]) }),
     agents: () => registry.all().map((a) => ({ ...a })),
     skills: skillCatalog,
     domains: (realm) => domainState().filter((d) => !realm || d.realm === realm),
-    resolveDecision: (id, args) => decisions.resolve(id, args),
+    /* Resolving a decision; an external send that ran becomes an event. */
+    resolveDecision: async (id, args) => {
+      const r = await decisions.resolve(id, args);
+      const d = r && r.decision;
+      if (d && d.action && ["send_email", "send_client_message"].indexOf(d.action.tool) >= 0 && d.execution && d.execution.result !== "NO_EXECUTOR")
+        /* Sent means the provider accepted it and nothing has since said it
+           failed; a bounce found at verification is a failure. */
+        await events.publish({ type: d.execution.result === "EXECUTED" && d.status !== "FAILED" ? "MESSAGE_SENT" : "MESSAGE_FAILED", key: "msg:" + d.id + ":" + d.status, source: "royal",
+          payload: { decision_id: d.id, tool: d.action.tool, status: d.status, verified: d.execution.verified } }).catch(() => {});
+      return r;
+    },
     status: async () => ({ calculator: await connector.status(clock()), provider: provider.status(), domains: domainState(), flags: F }),
   };
 }

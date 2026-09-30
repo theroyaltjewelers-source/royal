@@ -1,5 +1,7 @@
 # AGENT ARCHITECTURE
 
+See AGENT_ORCHESTRATION.md for routing, tasks and Grok Bot delegation.
+
 ## 1. Components
 
 | Component (spec name) | Implementation |

@@ -19,8 +19,10 @@ import { route } from "./router.js";
 const AGENTS = /\b(ace|grace|ledger|house|forge)\b/i;
 const DELEGATE_VERB = /\b(have|ask|get|tell|let)\s+(ace|grace|ledger|house|forge)\b/i;
 const DRAFT_WORDS = /\b(prepare|draft|write|put together|follow[\s-]?up|reach out|update|message|text|email|nudge|remind)\b/i;
-const SEND = /^\s*(ok(ay)?[,.]?\s*|yes[,.]?\s*|go ahead[,.]?\s*)?(send (it|that|this|the (message|update|draft|reminder))|go ahead and send( it)?|ship it)\b/i;
-const CLEAR = /^\s*(clear|never ?mind|reset|start over|that'?s all|dismiss)\b/i;
+const SEND = /^\s*(ok(ay)?[,.]?\s*|yes[,.]?\s*|go ahead[,.]?\s*)?(send (it|that|this|the (message|update|draft|reminder|email|intro|introduction))|go ahead and send( it)?|ship it)\b/i;
+/* "Never mind" is a cancellation (core/intelligence/intent_engine.js), not
+   just clearing the screen: it also withdraws anything waiting to be sent. */
+const CLEAR = /^\s*(clear|reset|start over|that'?s all|dismiss)\b/i;
 const BACK = /^\s*(go back|back|previous|undo that view)\b/i;
 const OPEN = /\b(pull up|open|bring up|focus on|show me|look at|go to)\b/i;
 const TRACE = /\b(trace|what'?s holding|holding (it|him|her|them|this) up|why (hasn'?t|has not|isn'?t|is not|did|is)|what'?s blocking|blocked)\b/i;

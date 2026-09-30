@@ -326,6 +326,7 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     legacyRun, legacyResult, legacyGetResult,
     hasBot: (id) => !!getBot(id), bots: () => [...bots.keys()], stats: () => ({ total, scopes: Object.fromEntries(counts) }),
     storage: () => (store.durable ? "DURABLE" : "TEMPORARY"),
+    enabled: () => globalEnabled,
     async close() { await ps.stop(); await store.close(); },
   };
 }

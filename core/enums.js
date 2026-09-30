@@ -25,7 +25,23 @@ export const RISK_RANK = freeze({ GREEN: 0, YELLOW: 1, ORANGE: 2, RED: 3, BLACK:
    executive surface entirely. */
 export const NEED = set("KNOW", "DECIDE", "APPROVE", "DO", "DELEGATE", "MONITOR", "NONE");
 
-export const EVIDENCE = set("VERIFIED", "REPORTED_UNVERIFIED", "INFERENCE", "RECOMMENDATION", "UNKNOWN");
+/* Evidence labels.  VERIFIED is the original House label and means verified
+   against an internal system; VERIFIED_INTERNAL is the same thing spelled out.
+   VERIFIED_EXTERNAL: an external fact ROYAL confirmed itself from a primary
+   or authoritative source.  MODEL_KNOWLEDGE: the language model's background
+   knowledge, never verified and never current by default. */
+export const EVIDENCE = set("VERIFIED", "VERIFIED_INTERNAL", "VERIFIED_EXTERNAL", "REPORTED_UNVERIFIED", "MODEL_KNOWLEDGE", "INFERENCE", "RECOMMENDATION", "UNKNOWN");
+
+/* Professional email discovery.  PATTERN_INFERRED is never verified. */
+export const EMAIL_STATUS = set("PUBLICLY_LISTED", "PROVIDER_FOUND", "PATTERN_INFERRED", "VERIFIED_DELIVERABLE", "LIKELY_DELIVERABLE", "RISKY", "INVALID", "UNVERIFIED", "NOT_FOUND");
+
+/* Delegated work, from assignment to verified completion. */
+export const TASK_STATUS = set("ASSIGNED", "IN_PROGRESS", "WAITING", "REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED", "CANCELLED");
+
+/* The reasoning policy (core/intelligence/reasoning.js). */
+export const REASONING_LEVEL = freeze({ DIRECT_RETRIEVAL: 0, QUICK: 1, OPERATIONAL: 2, DEEP: 3, AGENTIC_RESEARCH: 4, EXECUTION_PLANNING: 5 });
+
+export const CONFIDENCE = set("HIGH", "MEDIUM", "LOW", "NONE");
 
 export const FRESHNESS = set("CURRENT", "RECENT", "STALE", "UNKNOWN");
 
@@ -36,7 +52,7 @@ export const REVERSIBILITY = set("REVERSIBLE", "PARTIALLY_REVERSIBLE", "DIFFICUL
 export const DECISION_TYPE = set(
   "SEND_CLIENT_MESSAGE", "PRICING_EXCEPTION", "REFUND", "RUSH_REQUEST", "PRODUCTION_CHANGE",
   "VENDOR_PAYMENT", "POLICY_EXCEPTION", "POLICY_CHANGE", "POLICY_GAP", "CONTRACT", "DEPLOYMENT",
-  "DATA_DELETION", "INTERNAL_ACTION", "SOURCE_CONFLICT", "GENERAL",
+  "DATA_DELETION", "INTERNAL_ACTION", "SOURCE_CONFLICT", "GENERAL", "SEND_EXTERNAL_EMAIL", "CRM_WRITE",
 );
 
 export const DECISION_STATUS = set("OPEN", "APPROVED", "MODIFIED", "REJECTED", "EXECUTED", "FAILED", "VERIFIED", "EXPIRED", "CANCELLED");
@@ -59,7 +75,7 @@ export const EVENT_TYPE = set(
   "VENDOR_STATUS_CHANGED", "SHIPMENT_CREATED", "SHIPMENT_DELAYED", "QC_COMPLETED", "PROJECT_READY",
   "APPOINTMENT_CREATED", "COMMITMENT_CREATED", "COMMITMENT_DUE", "COMMITMENT_OVERDUE",
   "DECISION_REQUIRED", "SYSTEM_ERROR", "INTEGRATION_FAILED", "DATA_CONFLICT_DETECTED",
-  "SNAPSHOT_INGESTED",
+  "SNAPSHOT_INGESTED", "MESSAGE_SENT", "MESSAGE_FAILED",
 );
 
 /* Automation maturity.  A capability climbs one rung at a time and never

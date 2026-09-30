@@ -12,6 +12,13 @@ const STOP = new Set(["the", "and", "for", "with", "what", "why", "who", "how", 
   "owes", "owe", "need", "needs", "production", "waiting", "tahir", "custom", "does", "did", "last", "talk", "when", "pull", "open",
   "bring", "focus", "have", "prepare", "draft", "send", "holding", "much", "balance", "paid", "still", "grace", "ace", "ledger", "forge"]);
 
+/* Surnames that are also everyday words.  Written in lower case inside
+   otherwise capitalised text, they are read as words, not as clients. */
+const COMMON_WORDS = new Set(["price", "rich", "young", "king", "white", "black", "brown", "green", "gray", "grey", "grant", "rose", "may", "bell", "wood", "stone",
+  "gold", "silver", "love", "long", "short", "little", "day", "north", "south", "west", "east", "hunt", "lane", "page", "park", "ward", "cook", "cash", "hall",
+  "hill", "banks", "baker", "carter", "cross", "dean", "fox", "frank", "free", "glass", "golden", "hope", "joy", "lamb", "major", "marsh", "mason", "miller", "moss",
+  "noble", "rice", "rivers", "rock", "sage", "sharp", "small", "snow", "spring", "street", "summer", "swift", "walker", "waters", "wells", "wise", "woods", "brooks"]);
+
 function words(s) { return String(s || "").toLowerCase().replace(/['’]s\b/g, "").replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean); }
 
 export function resolveEntity(text, { projects = [], selected = null, recent = null } = {}) {
@@ -25,11 +32,19 @@ export function resolveEntity(text, { projects = [], selected = null, recent = n
   }
 
   const w = words(text).filter((x) => x.length >= 3 && !STOP.has(x));
+  /* A surname that is also an everyday word is read as the word only when it
+     is used as one: after an article or qualifier ("the spot price of
+     gold", "a gold price"), or followed by "of".  Otherwise, and whenever it
+     is capitalised, it is the client's name ("Did brooks pay?"). */
+  const raw = String(text || "");
+  const wordSense = (t) => new RegExp("\\b(the|a|an|this|that|its|their|our|your|spot|gold|silver|stock|share|market|current|today'?s|best|lowest|highest)\\s+" + t + "\\b", "i").test(raw)
+    || new RegExp("\\b" + t + "\\s+(of|per)\\b", "i").test(raw);
+  const writtenAsName = (t) => !COMMON_WORDS.has(t) || new RegExp("\\b" + t.charAt(0).toUpperCase() + t.slice(1) + "\\b").test(raw) || !wordSense(t);
   if (w.length) {
     const scored = projects.map((p) => {
       const c = words(p.client && p.client.name), n = words(p.name);
       let s = 0, byClient = false;
-      for (const t of w) { if (c.indexOf(t) >= 0) { s += 3; byClient = true; } if (n.indexOf(t) >= 0) s += 2; }
+      for (const t of w) { if (c.indexOf(t) >= 0) { s += 3; if (writtenAsName(t)) byClient = true; } if (n.indexOf(t) >= 0) s += 2; }
       return { p, s, byClient };
     }).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
     if (scored.length) {

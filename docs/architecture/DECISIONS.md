@@ -83,3 +83,11 @@
 **Tradeoffs.** One dependency and a database to run. Bot events are display-only by design, so a bot cannot ask ROYAL to act; that stays a human decision.
 **Proved.** `tests/grokbot.test.js` (27 tests: principals, isolation, realms, webhooks, streams, resume, rotation, v1 compatibility, persistence across restart and fan-out across two instances on real Postgres).
 **Reversibility.** High. `GROKBOT_ENABLED=false` turns it off; the down migration removes the tables.
+
+## ADR-012. An intelligence layer beside the House skills, not instead of them
+
+**Decision.** ROYAL gains an intelligence layer (`core/intelligence/`) that handles what the deterministic House skills do not: world knowledge, current research, company and executive research, professional contact research, House knowledge, calculation, outreach drafting and revision, sending external email through approval, sources and cancellation. House state still goes through the House skills with no model. The model provider is an interface (`AIProvider`); Grok is one implementation. Research uses the provider's server-side search, then ROYAL fetches the best sources itself to cross-check, and labels every claim. A sentence that names a House record stays with the House; consequential ambiguity stops and asks.
+**Why.** Tahir's direction: one intelligence to talk to, able to answer beyond the calculator, research people and companies, delegate, and act only with authority.
+**Tradeoffs.** Answers outside the House depend on a paid model provider with search (`XAI_API_KEY`), and contact lookups on paid providers (Hunter, Apollo). None is configured yet, so these paths are built and tested against the providers' documented response shapes but have not run live. Keyword retrieval, not embeddings, for House knowledge.
+**Proved.** `tests/intelligence.test.js` (48 tests, including the flagship flows A to H and a regression test for each finding of the independent security review), `tests/server.test.js` (intelligence routes and the voice session).
+**Reversibility.** High. Flags keep research, contact discovery, verification, sending, realtime voice and agent orchestration off until each is switched on.
