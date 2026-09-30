@@ -10,10 +10,13 @@ import { createHandler, fromEnv } from "./handler.js";
 import { MemoryStore } from "../core/store.js";
 import { GrokProvider } from "../core/providers/grok.js";
 import { UnavailableProvider } from "../core/providers/provider.js";
+import { createBridge } from "../core/grokbot/bridge.js";
 
 const env = Deno.env.toObject();
 const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
   store: new MemoryStore(),
   providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
 });
-Deno.serve(createHandler({ royal, auth, passcode, allowedOrigins }));
+/* The Grok Bot bridge runs in memory here: no Postgres driver in this entry. */
+const bridge = createBridge({ env });
+Deno.serve(createHandler({ royal, auth, passcode, bridge, allowedOrigins }));

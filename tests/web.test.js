@@ -58,3 +58,20 @@ test("the page never sets a body attribute that action handlers look for", () =>
   const actionKeys = [...app.matchAll(/closest\("\[data-([a-z-]+)\]"\)/g)].map((m) => m[1].replace(/-(\w)/g, (_, c) => c.toUpperCase()));
   for (const k of bodyKeys) assert.ok(actionKeys.indexOf(k) < 0, "body data-" + k + " collides with an action handler");
 });
+
+test("bot markdown is rendered safely: no raw HTML, no script links, only a fixed set of tags", async () => {
+  const { renderMarkdown } = await import("../web/js/markdown.js");
+  const evil = [
+    "<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "[click](javascript:alert(1))", "[x](data:text/html,<b>)",
+    "<a href=\"https://x\" onclick=\"y\">z</a>", "**<svg onload=alert(1)>**", "```\n<script>bad()</script>\n```", "[ok](https://ok.example/\" onmouseover=\"x)",
+  ].join("\n\n");
+  const html = renderMarkdown(evil);
+  assert.ok(!/<(script|img|svg|iframe|a href="javascript|a href="data)/i.test(html), html);
+  assert.ok(!/<[^>]+\son[a-z]+=/i.test(html), "no event-handler attribute inside any tag: " + html);
+  const tags = [...html.matchAll(/<([a-z0-9]+)/g)].map((m) => m[1]);
+  const allowed = ["p", "br", "h3", "h4", "h5", "h6", "strong", "em", "code", "pre", "ul", "ol", "li", "blockquote", "hr", "a"];
+  assert.ok(tags.every((t) => allowed.includes(t)), "unexpected tag in " + tags.join(","));
+  const good = renderMarkdown("# Briefing\n\n**Two** things:\n- one `x`\n- two\n\n[Open](https://example.com/a?b=1&c=2)");
+  assert.match(good, /<h3>Briefing<\/h3>/); assert.match(good, /<strong>Two<\/strong>/); assert.match(good, /<ul><li>one <code>x<\/code><\/li><li>two<\/li><\/ul>/);
+  assert.match(good, /<a href="https:\/\/example\.com\/a\?b=1&amp;c=2" target="_blank" rel="noopener noreferrer nofollow">Open<\/a>/);
+});

@@ -9,6 +9,8 @@ import { createHandler, fromEnv } from "./handler.js";
 import { fileStore, MemoryStore } from "../core/store.js";
 import { GrokProvider } from "../core/providers/grok.js";
 import { UnavailableProvider } from "../core/providers/provider.js";
+import { bridgeFromEnv } from "../core/grokbot/bridge.js";
+import { nodeAdapter } from "./node-adapter.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
@@ -34,21 +36,18 @@ const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
   store,
   providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
 });
-const handler = createHandler({ royal, auth, passcode, allowedOrigins, staticFiles });
+/* The Grok Bot bridge: Postgres when DATABASE_URL is set (migrations run on
+   start unless ROYAL_AUTO_MIGRATE=false), memory otherwise. */
+const bridge = await bridgeFromEnv(env, { migrationsDir: join(ROOT, "server", "migrations") });
+const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles });
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const chunks = []; for await (const c of req) chunks.push(c);
-    const body = chunks.length ? Buffer.concat(chunks) : undefined;
-    const request = new Request("http://" + (req.headers.host || "localhost") + req.url, {
-      method: req.method, headers: req.headers, body: ["GET", "HEAD"].includes(req.method) ? undefined : body });
-    const r = await handler(request);
-    res.writeHead(r.status, Object.fromEntries(r.headers));
-    res.end(Buffer.from(await r.arrayBuffer()));
-  } catch (e) {
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: false, error: "SERVER_ERROR" }));
-  }
-});
+const server = http.createServer(nodeAdapter(handler));
+/* requestTimeout bounds how long a request may take to arrive (a slow upload),
+   not how long a response may last, so live streams are unaffected; their 25
+   second heartbeat keeps proxies from closing them. */
+server.requestTimeout = 60000;
+server.headersTimeout = 65000;
+server.keepAliveTimeout = 65000;
 const port = Number(env.PORT || 8787);
 server.listen(port, () => console.log("ROYAL listening on http://localhost:" + port));
+

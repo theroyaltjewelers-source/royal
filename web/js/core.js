@@ -203,7 +203,12 @@ export class RoyalCore {
 
   _watch(dt) {
     if (this.reduced || this.mode !== "webgl") return;
-    this.frames.push(dt); if (this.frames.length < 90) return;
+    /* 90 frames normally; far sooner when frames are very slow (a weak GPU
+       or software rendering), so a struggling device steps down in seconds. */
+    this.frames.push(dt);
+    const spent = this.frames.reduce((x, y) => x + y, 0);
+    const verySlow = this.frames.length >= 8 && spent / this.frames.length > 0.08;   /* dt is capped at 0.1 s */
+    if (this.frames.length < 90 && !verySlow) return;
     const avg = this.frames.reduce((a, b) => a + b, 0) / this.frames.length; this.frames = [];
     if (avg > 0.028 && this.tierName !== "LOW") this.setTier(this.tierName === "HIGH" ? "MEDIUM" : "LOW");
   }

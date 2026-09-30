@@ -75,3 +75,11 @@
 **Tradeoffs.** Fewer things visible at once than a dashboard; lists live behind the menu or come from asking. Browser speech recognition sends audio to the browser vendor in Chrome and Edge. WebGL is needed for the full Core; a 2D fallback covers the rest.
 **Proved.** `tests/core.test.js` (composer schema), `tests/royal.test.js` (every answer carries a valid presentation; the Marcus conversation), `tests/web.test.js` (page and scripts agree, CSP-clean, no secrets), and browser walkthroughs at five sizes, with reduced motion and without WebGL.
 **Reversibility.** High. The API is unchanged; the old app is in git history.
+
+## ADR-011. The Grok Bot bridge, and Postgres with one dependency
+
+**Decision.** ROYAL connects to seven external Grok Bot assistants through `core/grokbot/`. Each bot has its own webhook, its own hashed API token and its own feed; a bot token may only post its own events and read its own requests. Bots are locked to realms (Skill Library both; the rest Business only), enforced on the server. Bot requests, events, tokens and state live in Postgres (`DATABASE_URL`), with migrations in `server/migrations/` and live fan-out across instances by `LISTEN/NOTIFY`. The `pg` package is ROYAL's first runtime dependency; it is loaded only when `DATABASE_URL` is set, so ROYAL without a database still runs with none. The node adapter now streams response bodies so Server-Sent Events work.
+**Why.** Tahir's direction: talk to each bot directly from ROYAL and watch each one's feed separately, with nothing mixing. A shared passcode could not tell bots apart, and memory could not survive a deploy or reach a second instance.
+**Tradeoffs.** One dependency and a database to run. Bot events are display-only by design, so a bot cannot ask ROYAL to act; that stays a human decision.
+**Proved.** `tests/grokbot.test.js` (27 tests: principals, isolation, realms, webhooks, streams, resume, rotation, v1 compatibility, persistence across restart and fan-out across two instances on real Postgres).
+**Reversibility.** High. `GROKBOT_ENABLED=false` turns it off; the down migration removes the tables.

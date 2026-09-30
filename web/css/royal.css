@@ -259,6 +259,68 @@ body[data-wide="1"][data-layout="content"] .caption { font-size: clamp(22px, 1.4
 .sb-sys .no em { color: var(--amber); }
 .sb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
 
+/* ---------------------------------------------------------------- bots */
+.bots { position: fixed; inset: 0; z-index: 9; display: flex; justify-content: center; background: rgba(3, 4, 3, .72); animation: fade .2s both; }
+.bp { position: relative; width: min(760px, 100vw); height: 100%; display: grid; grid-template-rows: auto auto 1fr; background: rgba(10, 12, 9, .97);
+  border-left: 1px solid var(--line); border-right: 1px solid var(--line); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
+.bp-top { position: relative; padding: calc(var(--safe-t) + 16px) 60px 6px 20px; }
+.bp-title { margin: 0; font: 500 22px var(--serif); }
+.bp-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-3); }
+.bp-x { position: absolute; top: calc(var(--safe-t) + 8px); right: 8px; }
+.bp-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 10px 16px 12px; border-bottom: 1px solid var(--line); }
+.bp-tabs::-webkit-scrollbar { display: none; }
+.bp-tab { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--line); background: none; color: var(--ink-2); font-size: 14px; white-space: nowrap; }
+.bp-tab[aria-selected="true"] { background: rgba(233, 237, 226, .09); color: var(--ink); border-color: var(--line-2); }
+.bp-tab i, .bp-state i { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--ink-3); flex: none; }
+.bp-tab.st-CONNECTED i, .bp-state.st-CONNECTED i { background: var(--lime); border-color: var(--lime); box-shadow: 0 0 8px rgba(149, 254, 0, .6); }
+.bp-tab.st-DISABLED i, .bp-state.st-DISABLED i { background: var(--ink-3); }
+.bp-tab.has-err i { background: var(--amber); border-color: var(--amber); box-shadow: none; }
+.bp-body { overflow-y: auto; overscroll-behavior: contain; padding: 14px 20px calc(var(--safe-b) + 20px); display: flex; flex-direction: column; }
+.bp-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.bp-state { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; }
+.bp-live { color: var(--ink-3); font-size: 12.5px; }
+.bp-live[data-s="live"] { color: #cdfb8f; }
+.bp-live[data-s="reconnecting"] { color: var(--amber); }
+.bp-meta { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-3); }
+.bp-meta .lnk { min-height: 28px; font-size: 12.5px; padding: 0; }
+.bp-err { color: var(--amber); }
+.bp-token { margin-top: 10px; padding: 12px; border-radius: 12px; border: 1px dashed var(--line-2); }
+.bp-token code { font: 12px var(--mono); color: var(--ink); }
+.bp-tok { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .4); font: 12px var(--mono); }
+.bp-feed { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 10px; }
+.bp-ev { max-width: 92%; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(18, 21, 16, .8); }
+.bp-ev.mine { justify-self: end; background: rgba(149, 254, 0, .06); border-color: rgba(149, 254, 0, .18); }
+.bp-ev.t-alert { border-color: rgba(255, 181, 74, .4); }
+.bp-ev.t-result { border-color: var(--line-2); }
+.bp-ev.failed { border-color: rgba(255, 90, 72, .45); }
+.bp-ev-h { display: flex; gap: 10px; align-items: baseline; margin: 0 0 4px; font-size: 11px; color: var(--ink-3); letter-spacing: .06em; }
+.bp-ev-h span { text-transform: uppercase; letter-spacing: .16em; color: var(--ink-2); }
+.bp-ev-h em { font-style: normal; }
+.bp-ev.failed .bp-ev-h em { color: var(--red); }
+.bp-ev-h time { margin-left: auto; }
+.bp-md { font-size: 14.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.bp-md > :first-child { margin-top: 0; } .bp-md > :last-child { margin-bottom: 0; }
+.bp-md p, .bp-md ul, .bp-md ol, .bp-md blockquote, .bp-md pre { margin: 0 0 8px; }
+.bp-md ul, .bp-md ol { padding-left: 20px; }
+.bp-md h3, .bp-md h4, .bp-md h5, .bp-md h6 { margin: 6px 0; font: 500 16px var(--serif); }
+.bp-md code { font: 12.5px var(--mono); background: rgba(0, 0, 0, .35); padding: 1px 5px; border-radius: 5px; }
+.bp-md pre { overflow-x: auto; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, .45); }
+.bp-md pre code { background: none; padding: 0; }
+.bp-md blockquote { padding-left: 12px; border-left: 2px solid var(--line-2); color: var(--ink-2); }
+.bp-md a { color: #dfffb5; text-underline-offset: 3px; }
+.bp-md hr { border: 0; border-top: 1px solid var(--line); }
+.bp-note { margin: 12px 0 0; font-size: 13px; color: var(--ink-3); }
+.bp-note.err { color: var(--red); }
+.bp-empty { flex: 1; }
+.bp-send { position: sticky; bottom: calc(-1 * (var(--safe-b) + 20px)); margin: 16px -20px calc(-1 * (var(--safe-b) + 20px)); padding: 12px 20px calc(var(--safe-b) + 14px); background: rgba(10, 12, 9, .98); border-top: 1px solid var(--line); }
+.bp-send textarea { width: 100%; min-height: 64px; max-height: 40vh; resize: vertical; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .35); font-size: 16px; line-height: 1.45; outline: none; }
+.bp-send textarea:focus { border-color: rgba(149, 254, 0, .45); }
+.bp-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.bp-row input[name="skill"] { flex: 1; min-width: 0; height: 44px; padding: 0 14px; border-radius: 22px; border: 1px solid var(--line); background: rgba(0, 0, 0, .25); font-size: 16px; outline: none; }
+.bp-count { font-size: 12px; color: var(--ink-3); }
+.bp-status { margin-top: 6px; min-height: 1em; }
+body[data-bots="1"] .marks, body[data-bots="1"] .typebar { visibility: hidden; }
+
 /* ---------------------------------------------------------------- boot */
 .boot, .signin { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 42%, rgba(5, 6, 5, .2), rgba(5, 6, 5, .92) 60%); }
 .boot { cursor: pointer; align-content: center; gap: 22px; transition: opacity .4s; }

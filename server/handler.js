@@ -8,11 +8,12 @@
 import { createRoyal } from "../core/royal.js";
 import { stableHash } from "../core/util.js";
 import { passcodeAuth } from "./passcode.js";
+import { isBotToken } from "../core/grokbot/tokens.js";
 
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
 
-export function createHandler({ royal, auth, passcode = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
+export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
   if (!royal) throw new Error("HANDLER_CONFIG: royal is required");
   if (!auth) throw new Error("HANDLER_CONFIG: auth is required");
   const hits = new Map();
@@ -21,13 +22,18 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
     const o = req.headers.get("origin");
     if (!o || allowedOrigins.indexOf(o) < 0) return {};
     return { "Access-Control-Allow-Origin": o, "Vary": "Origin", "Access-Control-Allow-Headers": "authorization, content-type",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Max-Age": "600" };
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Max-Age": "600" };
   }
   const SEC = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" };
   function json(req, status, body) {
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SEC, ...cors(req) } });
   }
   function fail(req, status, code, message) { return json(req, status, { ok: false, error: code, message }); }
+  /* A bridge result ({status, body}) or a streaming Response, with ROYAL's headers. */
+  function reply(req, r) {
+    if (r instanceof Response) { const h = new Headers(r.headers); for (const [k, v] of Object.entries(cors(req))) h.set(k, v); return new Response(r.body, { status: r.status, headers: h }); }
+    return json(req, r.status, r.body);
+  }
 
   async function body(req) {
     const len = Number(req.headers.get("content-length") || 0);
@@ -43,6 +49,62 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
     const n = (hits.get(k) || 0) + 1; hits.set(k, n);
     if (hits.size > 5000) for (const x of hits.keys()) if (!x.endsWith(":" + minute)) hits.delete(x);
     return n > rateLimit.perMinute;
+  }
+
+  /* ------------------------------------------------ Grok Bot bridge --- */
+  const BOT_PATH = /^\/v1\/bots\/([a-z][a-z0-9_]{0,31})(?:\/(token|message|events|feed|stream|requests\/([0-9a-fA-F-]{36})))?$/;
+  const noBridge = (req) => fail(req, 503, "BRIDGE_UNAVAILABLE", "The Grok Bot bridge is not running on this server.");
+  const since = (req, url) => url.searchParams.get("since") || req.headers.get("last-event-id") || undefined;
+
+  async function botRoutes(req, path, principal) {
+    const m = BOT_PATH.exec(path);
+    const own = m && m[1] === principal.bot_id;
+    if (own && req.method === "POST" && m[2] === "events") return reply(req, await bridge.postEvent(m[1], await body(req), { principal }));
+    if (own && req.method === "GET" && m[3]) return reply(req, await bridge.getRequest(m[1], m[3], { principal }));
+    if (principal.bot_id === "skill_library" && req.method === "POST" && path === "/v1/integrations/grokbot/result")
+      return reply(req, await bridge.legacyResult(await body(req), { principal }));
+    return fail(req, 403, "BOT_FORBIDDEN", "A bot token may only post its own events and read its own requests.");
+  }
+
+  async function ownerBotRoutes(req, url, path, user) {
+    if (!bridge) return noBridge(req);
+    const realm = url.searchParams.get("realm") || undefined;
+    const audit = (action, summary, r) => royal.audit.record({ actor: "tahir", action, summary, executive: true, realm: r || "BUSINESS" }).catch(() => {});
+    if (req.method === "GET" && path === "/v1/bots") return reply(req, await bridge.listBots({ realm }));
+    if (req.method === "GET" && path === "/v1/feed/stream") return reply(req, await bridge.stream(null, { realm, since: since(req, url), signal: req.signal }));
+    if (req.method === "POST" && path === "/v1/integrations/grokbot/run") {
+      const r = await bridge.legacyRun(await body(req), { realm, requestedBy: "tahir" });
+      if (r.body.request_id) await audit("BOT_MESSAGE_SENT", "Asked Skill Library to run a skill (" + (r.body.ok ? "delivered" : r.body.error) + ").", realm);
+      return reply(req, r);
+    }
+    if (req.method === "POST" && path === "/v1/integrations/grokbot/result") return fail(req, 403, "BOT_ONLY", "Results come from Skill Library itself, signed with its own token.");
+    const lr = /^\/v1\/integrations\/grokbot\/result\/([0-9a-fA-F-]{36})$/.exec(path);
+    if (req.method === "GET" && lr) return reply(req, await bridge.legacyGetResult(lr[1], {}));
+    const m = BOT_PATH.exec(path);
+    if (!m) return null;
+    const [, id, action, rid] = m;
+    if (!bridge.hasBot(id)) return fail(req, 404, "UNKNOWN_BOT", "No such bot.");
+    if (action === "token" && req.method === "POST") {
+      const r = await bridge.issueToken(id);
+      if (r.body.ok) await audit("BOT_TOKEN_ISSUED", "Issued a new token for the " + id + " bot. Any earlier token for it stopped working.");
+      return reply(req, r);
+    }
+    if (action === "token" && req.method === "DELETE") {
+      const r = await bridge.revokeToken(id);
+      if (r.body.ok) await audit("BOT_TOKEN_REVOKED", "Revoked the token for the " + id + " bot.");
+      return reply(req, r);
+    }
+    if (action === "message" && req.method === "POST") {
+      const b = await body(req);
+      const r = await bridge.sendMessage(id, b, { realm, requestedBy: "tahir" });
+      if (r.body.request_id) await audit("BOT_MESSAGE_SENT", "Sent a message to the " + id + " bot (" + (r.body.ok ? "delivered" : r.body.error) + ").", (b && b.realm) || realm);
+      return reply(req, r);
+    }
+    if (action === "events" && req.method === "POST") return fail(req, 403, "BOT_ONLY", "Only the bot itself posts to its events, with its own token.");
+    if (action === "feed" && req.method === "GET") return reply(req, await bridge.getFeed(id, { since: url.searchParams.get("since") || undefined, limit: url.searchParams.get("limit") || undefined, realm }));
+    if (action === "stream" && req.method === "GET") return reply(req, await bridge.stream(id, { realm, since: since(req, url), signal: req.signal }));
+    if (rid && req.method === "GET") return reply(req, await bridge.getRequest(id, rid, {}));
+    return fail(req, 405, "METHOD_NOT_ALLOWED", "That method is not supported here.");
   }
 
   return async function handle(req) {
@@ -72,6 +134,28 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
     const h = req.headers.get("authorization") || "";
     const token = /^Bearer\s+(.+)$/i.exec(h);
     if (!token) return fail(req, 401, "AUTH_REQUIRED", "Sign in to use ROYAL.");
+
+    /* A Grok Bot's own token.  A bot may post its own events and read its own
+       requests, and nothing else: not another bot, not /v1/command, not
+       decisions, not domains, not admin. */
+    if (isBotToken(token[1])) {
+      if (!bridge) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
+      let principal;
+      try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check that token. Nothing was done."); }
+      if (!principal) {
+        /* Slow down guessing: invalid bot tokens are limited per address. */
+        const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+        if (limited("badbot:" + who)) return fail(req, 429, "RATE_LIMITED", "Too many requests. Wait a minute.");
+        return fail(req, 401, "AUTH_INVALID", "That token is not valid or has been revoked.");
+      }
+      if (limited(stableHash(token[1]))) return fail(req, 429, "RATE_LIMITED", "Too many requests. Wait a minute.");
+      try { return await botRoutes(req, path, principal); }
+      catch (e) {
+        if (e.status) return fail(req, e.status, e.code, e.message);
+        await royal.audit.record({ actor: "bot:" + principal.bot_id, action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
+        return fail(req, 500, "SERVER_ERROR", "ROYAL hit an internal error. Nothing was changed.");
+      }
+    }
     let user;
     try {
       user = passcode ? await passcode.verify(token[1]) : undefined;
@@ -145,6 +229,10 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
         const b = await body(req);
         const r = await royal.ingestCalculator(b.snapshot, { actor: "calculator:" + user.id, transport: b.transport || "embedded" });
         return json(req, r.ok ? 200 : 422, r);
+      }
+      if (path === "/v1/bots" || path.startsWith("/v1/bots/") || path === "/v1/feed/stream" || path.startsWith("/v1/integrations/grokbot/")) {
+        const r = await ownerBotRoutes(req, url, path, user);
+        if (r) return r;
       }
       const m = /^\/v1\/decisions\/([A-Za-z0-9_]+)\/resolve$/.exec(path);
       if (req.method === "POST" && m) {

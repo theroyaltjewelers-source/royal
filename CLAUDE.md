@@ -20,7 +20,7 @@ Read this before changing anything.
 
 ## How a change is made here
 
-(a) Zero runtime dependencies. ES modules. No bundler. No build step.
+(a) One runtime dependency, `pg`, loaded only when `DATABASE_URL` is set (ADR-011). No others without an ADR. ES modules. No bundler. No build step.
 
 (b) Every behaviour has a test in `tests/`. Run `npm test`. With a calculator checkout, run `RTJ_CALCULATOR_DIR=../royal-t node --test tests/` so the contract and embed-copy checks run too.
 
@@ -42,9 +42,21 @@ Read this before changing anything.
 
 (d) Check changes in a browser at phone and desktop sizes, with reduced motion and without WebGL. See `docs/architecture/ROYAL_INTERACTION_ARCHITECTURE.md`.
 
+## The Grok Bot bridge (core/grokbot/)
+
+(a) External Grok Bots are not ROYAL's specialists, even where names match. `/v1/bots` and `/v1/agents` never share state or authority.
+
+(b) Every store method takes the bot id and every query filters on it. A bot token reaches two routes only: its own events and its own requests.
+
+(c) Bot events are records to show. Nothing in the bridge may call a tool, create a decision or execute anything.
+
+(d) Webhook URLs and keys never leave `bots.js` and `bridge.js`: not in responses, logs or errors. `publicBotView` is the only shape that goes out.
+
+(e) Run the Postgres tests with `TEST_DATABASE_URL=postgres://… npm test`. See `docs/grokbot-bridge.md`.
+
 ## What is known to be wrong or missing
 
-(a) Stores: memory and JSON file only. Multi-instance needs the Postgres store.
+(a) Stores: decisions and audit are still memory or JSON file only (Postgres now exists for the Grok Bot bridge; moving these onto it is the next step). Multi-instance needs that.
 
 (b) ROYAL refreshes only while a signed-in calculator is open (ADR-002).
 

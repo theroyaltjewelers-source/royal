@@ -20,6 +20,7 @@ import { Voice } from "./voice.js";
 import { Sound } from "./sound.js";
 import { validateSpec } from "./schema.js";
 import { esc } from "./primitives.js";
+import { BotsPanel } from "./bots.js";
 
 const CFG = window.ROYAL_CONFIG || {};
 const $ = (id) => document.getElementById(id);
@@ -107,7 +108,7 @@ $("passForm").addEventListener("submit", async (e) => {
   store.set("royal.session", r.token); TOKEN = r.token;
   const st = await api("GET", "/v1/status");
   if (!st.ok) return showSignIn(st.message);
-  $("signin").hidden = true;
+  $("signin").hidden = true; $("signinStatus").textContent = "";
   enter(st, { firstSignIn: true });
 });
 
@@ -188,6 +189,7 @@ $("typebar").addEventListener("submit", (e) => { e.preventDefault(); const t = $
 $("say").addEventListener("input", () => { if (voice.speaking) voice.stopSpeaking(); bump(); });
 document.addEventListener("keydown", (e) => {
   if (!TOKEN || !$("signin").hidden || !$("boot").hidden) return;
+  if (bots.isOpen) { if (e.key === "Escape") bots.close(); return; }
   const inField = /INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName);
   if (e.key === "Escape") { if (!$("sheet").hidden) return closeSheet(); if (voice.speaking) return voice.stopSpeaking(); if (state.state === "LISTENING") { voice.cancel(); return; } if (!$("typebar").hidden) return closeType(); return; }
   if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -324,6 +326,11 @@ function paintMute() { $("muteBtn").setAttribute("aria-pressed", voice.muted ? "
 $("muteBtn").addEventListener("click", () => { voice.setMuted(!voice.muted); paintMute(); });
 paintMute();
 
+/* ------------------------------------------------------------- bots --- */
+/* The external Grok Bots, each in its own tab with its own live feed. */
+const bots = new BotsPanel({ root: $("bots"), api, token: () => TOKEN, realm: () => REALM, base: CFG.API || "",
+  onOpen: () => { bump(); closeType(); }, onClose: () => { $("menuBtn").focus({ preventScroll: true }); settle(); } });
+
 /* ------------------------------------------------------------ sheet --- */
 function openSheet(view = "home") { $("sheet").hidden = false; document.body.dataset.menu = "1"; showSheet(view); bump(); }
 function closeSheet() { if ($("sheet").hidden) return; $("sheet").hidden = true; document.body.dataset.menu = "0"; $("menuBtn").focus({ preventScroll: true }); }
@@ -342,6 +349,7 @@ async function showSheet(view) {
         '<li><button type="button" data-sheet="decisions">Decisions<span id="sbDec"></span></button></li>' +
         '<li><button type="button" data-sheet="activity">Activity</button></li>' +
         '<li><button type="button" data-sheet="agents">Specialists</button></li>' +
+        '<li><button type="button" data-sheet="bots">Bots</button></li>' +
         '<li><button type="button" data-sheet="systems">Systems</button></li>' +
       "</ul>" +
       '<p class="sb-h">Preferences</p><ul class="sb-list">' +
@@ -384,7 +392,9 @@ async function showSheet(view) {
 }
 
 $("sheetBody").addEventListener("click", async (e) => {
-  const sv = e.target.closest("#sheetBody [data-sheet]"); if (sv) return showSheet(sv.dataset.sheet);
+  const sv = e.target.closest("#sheetBody [data-sheet]");
+  if (sv && sv.dataset.sheet === "bots") { closeSheet(); return bots.open(); }
+  if (sv) return showSheet(sv.dataset.sheet);
   const rg = e.target.closest("#sheetBody [data-realm]"); if (rg) { switchRealm(rg.dataset.realm); return showSheet("home"); }
   const tr = e.target.closest("#sheetBody [data-tier]"); if (tr) { core.setTier(tr.dataset.tier); return showSheet("systems"); }
   if (e.target.id === "signOut") { store.set("royal.session", null); TOKEN = null; location.reload(); return; }
@@ -408,6 +418,7 @@ function switchRealm(r) {
   if (r === REALM || ["BUSINESS", "PERSONAL"].indexOf(r) < 0) return;
   REALM = r; store.set("royal.realm", r); CONVO = newConvo();
   stage.history = []; stage.clear(); stage.setHeard("");
+  bots.reset();
   applyRealm();
   stage.setCaption(r === "PERSONAL" ? "Personal. Nothing from the business comes in here." : "Business.", { quiet: true });
   refreshDecisionMark();
