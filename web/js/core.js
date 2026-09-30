@@ -8,9 +8,13 @@
    It eases every frame toward the parameters of the current state
    (web/js/state.js).  Tiers: HIGH, MEDIUM, LOW (fewer octaves, no particles,
    lower resolution), a Canvas 2D fallback when WebGL is unavailable, and a
-   reduced-motion mode that keeps light but removes movement.  The frame rate
-   is watched; a slow device steps down a tier on its own.  Rendering pauses
-   when the page is hidden and drops to 30 fps at rest.
+   reduced-motion mode that keeps light but removes movement.  Every device
+   starts at HIGH, so a phone shows the same Core as a desktop.  The frame
+   rate is watched; a device that truly struggles (under about 22 fps) steps
+   down a tier for this visit only.  A screen capped at 30 fps (an iPhone in
+   Low Power Mode) is not struggling and keeps its tier.  Only a tier Tahir
+   picks in the menu is remembered.  Rendering pauses when the page is
+   hidden and drops to 30 fps at rest.
 
    Alive, but only ever true: at rest it breathes and drifts on a rhythm that
    never quite repeats (organic()); a press squeezes it and a release springs
@@ -114,8 +118,11 @@ export class RoyalCore {
     this.pressTarget = 0; this.pressX = 0; this.pressV = 0;
     this.layout = { cx: 0.5, cy: 0.5, r: 0.17 }; this.layoutCur = null;
     this.nodes = []; this.frames = []; this.running = false; this.onFallback = null;
-    const saved = (() => { try { return localStorage.getItem("royal.quality"); } catch (_) { return null; } })();
-    this.tierName = saved && TIERS[saved] ? saved : (matchMedia("(max-width: 700px)").matches ? "MEDIUM" : "HIGH");
+    /* Earlier versions saved automatic step-downs under "royal.quality", which
+       could leave a phone on LOW for good after one slow moment; that key is
+       dropped, and only a tier chosen in the menu is kept. */
+    const saved = (() => { try { localStorage.removeItem("royal.quality"); return localStorage.getItem("royal.quality.chosen"); } catch (_) { return null; } })();
+    this.tierName = saved && TIERS[saved] ? saved : "HIGH";
     this.mode = this._initGL() ? "webgl" : (this._init2D() ? "2d" : "none");
     document.addEventListener("visibilitychange", () => { if (!document.hidden) this._loop(); });
   }
@@ -158,7 +165,8 @@ export class RoyalCore {
      only for as long as speech is actually playing. */
   setSpeaking(on) { this.speaking = !!on; this._loop(); }
   touchAt(x, y) { this.touch = { x, y, age: 0 }; this._loop(); }
-  setTier(name) { if (TIERS[name]) { this.tierName = name; try { localStorage.setItem("royal.quality", name); } catch (_) {} this._resize(); } }
+  /* A tier chosen in the menu is remembered; an automatic step-down is not. */
+  setTier(name, { remember = true } = {}) { if (TIERS[name]) { this.tierName = name; if (remember) { try { localStorage.setItem("royal.quality.chosen", name); } catch (_) {} } this._resize(); } }
   get tier() { return TIERS[this.tierName]; }
 
   _resize() {
@@ -210,8 +218,11 @@ export class RoyalCore {
     else [this.pressX, this.pressV] = this.pressTarget ? spring(this.pressX, this.pressV, 1, 30, 0.9, dt) : spring(this.pressX, this.pressV, 0, 15, 0.4, dt);
     if (this.pressTarget || Math.abs(this.pressX) > 0.002 || Math.abs(this.pressV) > 0.01) moving = true;
     this.moving = moving;
-    /* Speaking with no level to follow: a soft, irregular flutter between words. */
-    if (this.speaking && this.clock - this.levelAt > 0.25) this.ampTarget = Math.max(this.ampTarget, 0.14 + 0.1 * organic(this.clock * 7.3));
+    /* Speaking with no level to follow (a device voice that reports no word
+       boundaries, as on some phones): an irregular pulse at the pace of
+       speech, so ROYAL visibly speaks on every device, not only where the
+       browser reports each word. */
+    if (this.speaking && this.clock - this.levelAt > 0.25) this.ampTarget = Math.max(this.ampTarget, 0.2 + 0.26 * Math.max(0, organic(this.clock * 7.3)));
     const L = this.layout; if (!this.layoutCur) this.layoutCur = { ...L };
     const kl = 1 - Math.exp(-dt * (this.reduced ? 12 : 4));
     for (const key of ["cx", "cy", "r"]) this.layoutCur[key] += (L[key] - this.layoutCur[key]) * kl;
@@ -287,6 +298,6 @@ export class RoyalCore {
     const verySlow = this.frames.length >= 8 && spent / this.frames.length > 0.08;   /* dt is capped at 0.1 s */
     if (this.frames.length < 90 && !verySlow) return;
     const avg = this.frames.reduce((a, b) => a + b, 0) / this.frames.length; this.frames = [];
-    if (avg > 0.028 && this.tierName !== "LOW") this.setTier(this.tierName === "HIGH" ? "MEDIUM" : "LOW");
+    if (avg > 0.045 && this.tierName !== "LOW") this.setTier(this.tierName === "HIGH" ? "MEDIUM" : "LOW", { remember: false });
   }
 }

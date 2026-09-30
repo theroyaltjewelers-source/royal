@@ -281,6 +281,22 @@ document.addEventListener("visibilitychange", pressEnd);
 function noHoldMenu(e) { if (lastPointer !== "mouse") e.preventDefault(); }
 for (const id of ["wake", "core"]) { $(id).addEventListener("pointerdown", pressStart, { passive: true }); $(id).addEventListener("contextmenu", noHoldMenu); }
 
+/* Touch anywhere.  With an answer showing, the column of objects covers most
+   of a phone's screen (on a wide screen it sits to one side and the Core's
+   open space stays touchable).  A tap on the column's empty space, the
+   words or the gaps between cards, is a touch on the Core too, so the
+   whole screen answers on every device.  Cards, links and controls keep
+   their own taps, a scroll is never a tap, and selecting text wakes nothing. */
+const OWN_TAP = "a, button, input, textarea, select, label, summary, details, [role=button], [tabindex], .obj";
+$("column").addEventListener("click", (e) => {
+  if (document.body.dataset.layout !== "content" || e.target.closest(OWN_TAP)) return;
+  const sel = window.getSelection && window.getSelection(); if (sel && String(sel).trim()) return;
+  if (!$("sheet").hidden) return closeSheet();
+  core.touchAt(e.clientX, e.clientY); core.press(true); setTimeout(() => core.press(false), 120);
+  if (e.pointerType === "touch" || e.pointerType === "pen") sound.tap();
+  wake(e);
+});
+
 $("wake").addEventListener("click", wake);
 $("core").addEventListener("click", (e) => { if (!$("sheet").hidden) return closeSheet(); wake(e); });
 
