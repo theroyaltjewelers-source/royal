@@ -83,6 +83,7 @@ The markers `external`, `money`, `paid` and `external_read` describe the tool; t
 | email_discovery | off | Paid contact discovery through Hunter or Apollo (`HUNTER_API_KEY`, `APOLLO_API_KEY`) |
 | email_verification | off | Paid deliverability checks through Hunter |
 | realtime_voice | off | Allows `POST /v1/voice/session`; needs `XAI_API_KEY` (`VOICE_ARCHITECTURE.md`) |
+| spoken_voice | on | Allows `POST /v1/voice/speak`, ROYAL's one voice for spoken replies; Business only; needs `XAI_API_KEY`. Not a tool: it only speaks a sentence ROYAL already wrote (`VOICE_ARCHITECTURE.md`, section 5) |
 | advanced_agent_orchestration | off | Allows delegation to external Grok Bots through the bridge |
 
 Set with `ROYAL_FLAGS='{"agent_internal_write":true}'`.

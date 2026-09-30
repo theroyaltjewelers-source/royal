@@ -68,6 +68,7 @@ const voice = new Voice({
   onError: (code, msg) => { if (msg) { stage.setCaption(msg, { quiet: true }); openType(); } },
   onSpeechBoundary: () => core.pulse(0.55),
   onSpeaking: (on) => { core.setSpeaking(on); document.body.dataset.speaking = on ? "1" : "0"; },
+  audio: () => sound.ac,   /* the context the first touch unlocked, so iPhone plays ROYAL's voice */
 });
 
 /* --------------------------------------------------------- session --- */
@@ -157,6 +158,8 @@ let INTEL = null, rt = null;
 async function loadIntelligence() {
   const r = await api("GET", "/v1/intelligence/status");
   INTEL = r.ok ? r : null;
+  /* ROYAL's one voice, from the server, on every device (Business only). */
+  voice.useServer(INTEL && INTEL.spoken_voice === "AVAILABLE" ? { ready: () => REALM === "BUSINESS", fetch: speechFor } : null);
   if (INTEL && INTEL.realtime_voice === "AVAILABLE" && !rt) {
     rt = new RealtimeVoice({ api, ask: askFromVoice, realm: () => REALM,
       onState: (s) => {
@@ -170,6 +173,11 @@ async function loadIntelligence() {
       onLevel: (a) => { core.setAmplitude(a); core.pulse(a * 0.6); },
       onError: (m) => { stage.setCaption(m, { quiet: true }); } });
   }
+}
+async function speechFor(text, signal) {
+  const r = await fetch((CFG.API || "") + "/v1/voice/speak?realm=" + REALM, { method: "POST", signal,
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN }, body: JSON.stringify({ text: text.slice(0, 1200) }) });
+  return r.ok ? r.arrayBuffer() : null;
 }
 async function askFromVoice(text) {
   for (let i = 0; i < 40 && busy; i++) await wait(250);

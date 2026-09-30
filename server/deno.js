@@ -22,6 +22,6 @@ const intel = await intelligenceFromEnv(env, { docsDir: new URL("../docs", impor
 const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
   store: new MemoryStore(), extras: { ...intel, bridge },
   providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL, fastModel: e.ROYAL_GROK_FAST_MODEL,
-    voiceModel: e.ROYAL_VOICE_MODEL || "grok-voice-latest", voice: e.ROYAL_VOICE || "eve", metrics: intel.metrics }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
+    voiceModel: e.ROYAL_VOICE_MODEL || "grok-voice-latest", voice: e.ROYAL_VOICE || "ara", metrics: intel.metrics }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
 });
 Deno.serve(createHandler({ royal, auth, passcode, bridge, allowedOrigins }));

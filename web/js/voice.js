@@ -3,7 +3,11 @@
    Input:  the browser's speech recognition (feature-detected).  Partial and
            final transcripts, silence detection, cancellation, errors named
            plainly.  While listening, the microphone level drives the Core.
-   Output: the browser's speech synthesis.  Word boundaries pulse the Core.
+   Output: ROYAL's own voice from the server (POST /v1/voice/speak), the same
+           on every device, played through Web Audio so its loudness moves
+           the Core.  Where the server cannot speak (Personal, switched off,
+           no key, offline) the browser's speech synthesis says it instead,
+           so a reply is never silent.  Word boundaries pulse the Core.
    Barge-in: speaking, tapping the Core or typing stops ROYAL mid-sentence.
    Mute:   spoken replies can be switched off; text always remains.
 
@@ -13,7 +17,7 @@
    typing is offered.  Nothing here pretends to have heard anything. */
 
 export class Voice {
-  constructor({ onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary, onSpeaking } = {}) {
+  constructor({ onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary, onSpeaking, audio = () => null } = {}) {
     this.SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
     this.canListen = !!this.SR;
     this.canSpeak = "speechSynthesis" in window;
@@ -21,6 +25,9 @@ export class Voice {
     this.rec = null; this.listening = false; this.starting = false; this.speaking = false;
     this.muted = (() => { try { return localStorage.getItem("royal.muted") === "1"; } catch (_) { return false; } })();
     this.voice = null;
+    this.audio = audio;          /* the page's unlocked AudioContext, if any */
+    this.server = null;          /* { ready(), fetch(text, signal) -> ArrayBuffer | null } */
+    this.gen = 0;                /* bumps on every new reply and every stop, so a late answer is dropped */
     if (this.canSpeak) { const pick = () => { this.voice = this._pickVoice(); }; pick(); speechSynthesis.onvoiceschanged = pick; }
   }
 
@@ -30,6 +37,9 @@ export class Voice {
     for (const re of pref) { const v = vs.find((x) => re.test(x.name) || re.test(x.lang)); if (v) return v; }
     return vs[0] || null;
   }
+
+  /* Speak with ROYAL's own voice where the server offers it. */
+  useServer(server) { this.server = server || null; }
 
   setMuted(m) { this.muted = !!m; try { localStorage.setItem("royal.muted", m ? "1" : "0"); } catch (_) {} if (m) this.stopSpeaking(); }
 
@@ -92,8 +102,17 @@ export class Voice {
   _stopMeter() { cancelAnimationFrame(this._raf); if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; } }
 
   speak(text, { onEnd } = {}) {
+    if (this.muted || !text) { onEnd && onEnd(); return false; }
+    if (this.server && this.server.ready()) { this.stopSpeaking(); this._speakServer(text, onEnd); return true; }
+    return this._speakBrowser(text, onEnd);
+  }
+
+  _speakBrowser(text, onEnd) {
     if (!this.canSpeak || this.muted || !text) { onEnd && onEnd(); return false; }
     this.stopSpeaking();
+    /* iOS often has no voice list yet when the page opens, and may never say
+       when it arrives: pick again at speaking time rather than keep none. */
+    if (!this.voice) this.voice = this._pickVoice();
     const u = new SpeechSynthesisUtterance(text.replace(/\$([\d,]+)/g, "$1 dollars"));
     if (this.voice) u.voice = this.voice;
     u.rate = 1.02; u.pitch = 0.96;
@@ -105,7 +124,65 @@ export class Voice {
     speechSynthesis.speak(u);
     return true;
   }
-  /* Barge-in: stop mid-sentence. */
-  stopSpeaking() { if (this.canSpeak && (this.speaking || speechSynthesis.speaking)) speechSynthesis.cancel(); this.speaking = false; this._speakingNow(false); }
+
+  /* ROYAL's own voice.  The words go to the server, the audio comes back
+     and plays through Web Audio.  Any failure before the first sound hands
+     the same words to the device's voice; an interruption ends quietly. */
+  async _speakServer(text, onEnd) {
+    const gen = ++this.gen, ctl = new AbortController();
+    this.abort = ctl; this.speaking = true;
+    let ended = false;
+    const finish = () => { if (ended) return; ended = true; if (this.gen === gen) { this.speaking = false; this.src = null; this._speakingNow(false); } cancelAnimationFrame(this._outRaf); onEnd && onEnd(); };
+    const fallback = () => { if (ended) return; ended = true; if (this.gen !== gen) { onEnd && onEnd(); return; } this.speaking = false; this._speakBrowser(text, onEnd); };
+    let buf = null;
+    try { buf = await this.server.fetch(text, ctl.signal); } catch (_) { buf = null; }
+    if (this.gen !== gen) return finish();                    /* stopped while the voice was on its way */
+    if (!buf) return fallback();
+    const ac = this._ctx();
+    if (!ac) return fallback();
+    let audio;
+    try { audio = await new Promise((ok, no) => { const p = ac.decodeAudioData(buf, ok, no); if (p && p.then) p.then(ok, no); }); }
+    catch (_) { return fallback(); }
+    if (this.gen !== gen) return finish();
+    try {
+      const src = ac.createBufferSource(), an = ac.createAnalyser();
+      an.fftSize = 512; src.buffer = audio; src.connect(an); an.connect(ac.destination);
+      src.onended = finish;
+      this.src = src;
+      src.start();
+      this._speakingNow(true);
+      /* Loudness moves the Core, and a rising syllable pulses it, the way
+         word boundaries do for the device voice. */
+      const data = new Uint8Array(an.fftSize); let last = 0;
+      const tick = () => {
+        if (ended || this.gen !== gen) return;
+        an.getByteTimeDomainData(data); let s = 0; for (const v of data) { const x = (v - 128) / 128; s += x * x; }
+        const a = Math.min(1, Math.sqrt(s / data.length) * 4);
+        this.cb.onLevel && this.cb.onLevel(a);
+        if (a - last > 0.18) this.cb.onSpeechBoundary && this.cb.onSpeechBoundary();
+        last = a;
+        this._outRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (_) { return fallback(); }
+  }
+
+  /* The page's AudioContext (unlocked by the first touch), or one of our own. */
+  _ctx() {
+    let ac = this.audio && this.audio();
+    if (!ac) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; try { this.ac = this.ac || new AC(); } catch (_) { return null; } ac = this.ac; }
+    if (ac.state === "suspended" || ac.state === "interrupted") { try { const p = ac.resume(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
+    return ac;
+  }
+
+  /* Barge-in: stop mid-sentence, whichever voice is speaking. */
+  stopSpeaking() {
+    this.gen++;
+    if (this.abort) { try { this.abort.abort(); } catch (_) {} this.abort = null; }
+    if (this.src) { const s = this.src; this.src = null; try { s.stop(); } catch (_) {} }
+    cancelAnimationFrame(this._outRaf);
+    if (this.canSpeak && (this.speaking || speechSynthesis.speaking)) speechSynthesis.cancel();
+    this.speaking = false; this._speakingNow(false);
+  }
   _speakingNow(on) { if (this._sp === on) return; this._sp = on; this.cb.onSpeaking && this.cb.onSpeaking(on); }
 }

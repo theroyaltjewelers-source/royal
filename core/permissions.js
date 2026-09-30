@@ -80,6 +80,11 @@ export const DEFAULT_FLAGS = deepFreeze({
   email_discovery: false,        /* paid contact providers (Hunter, Apollo) */
   email_verification: false,     /* paid verification (Hunter) */
   realtime_voice: false,         /* xAI realtime voice; needs XAI_API_KEY */
+  /* One voice on every device: ROYAL's spoken replies come from xAI text to
+     speech instead of each device's own voices.  On at Tahir's request (30
+     September 2026) although it costs per reply; Business only; needs
+     XAI_API_KEY; the device voice takes over whenever it cannot answer. */
+  spoken_voice: true,
   advanced_agent_orchestration: false,  /* delegating to external Grok Bots from ROYAL's router */
 });
 
