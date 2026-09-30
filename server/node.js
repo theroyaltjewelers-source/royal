@@ -30,11 +30,11 @@ async function staticFiles(path) {
 const env = process.env;
 const store = env.ROYAL_STORE_PATH ? await fileStore(env.ROYAL_STORE_PATH) : new MemoryStore();
 if (!env.ROYAL_STORE_PATH) console.warn("ROYAL: ROYAL_STORE_PATH is not set; decisions and audit are in memory and will be lost on restart.");
-const { royal, auth, allowedOrigins } = await fromEnv(env, {
+const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
   store,
   providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
 });
-const handler = createHandler({ royal, auth, allowedOrigins, staticFiles });
+const handler = createHandler({ royal, auth, passcode, allowedOrigins, staticFiles });
 
 const server = http.createServer(async (req, res) => {
   try {

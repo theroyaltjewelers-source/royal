@@ -7,11 +7,12 @@
 
 import { createRoyal } from "../core/royal.js";
 import { stableHash } from "../core/util.js";
+import { passcodeAuth } from "./passcode.js";
 
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
 
-export function createHandler({ royal, auth, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
+export function createHandler({ royal, auth, passcode = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
   if (!royal) throw new Error("HANDLER_CONFIG: royal is required");
   if (!auth) throw new Error("HANDLER_CONFIG: auth is required");
   const hits = new Map();
@@ -55,12 +56,27 @@ export function createHandler({ royal, auth, allowedOrigins = [], staticFiles = 
     }
     if (path === "/v1/health") return json(req, 200, { ok: true, service: "royal", version: VERSION });
 
+    /* ROYAL's own sign-in: a passcode, no email. */
+    if (path === "/v1/login" && req.method === "POST") {
+      if (!passcode) return fail(req, 503, "PASSCODE_NOT_CONFIGURED", "ROYAL's passcode sign-in is not set up on the server.");
+      let b; try { b = await body(req); } catch (e) { return fail(req, e.status || 400, e.code || "BAD_JSON", e.message); }
+      const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+      const r = await passcode.login(String(b.passcode || ""), who);
+      if (!r.ok) return fail(req, r.status, r.error, r.message);
+      await royal.audit.record({ actor: "tahir", action: "SIGNED_IN", summary: "Signed in to ROYAL with the passcode.", executive: true });
+      return json(req, 200, { ok: true, token: r.token, expires_at: r.expires_at });
+    }
+    if (path === "/v1/login-methods" && req.method === "GET") return json(req, 200, { ok: true, passcode: !!(passcode && passcode.configured) });
+
     /* ------------------------------------------------------------ auth --- */
     const h = req.headers.get("authorization") || "";
     const token = /^Bearer\s+(.+)$/i.exec(h);
     if (!token) return fail(req, 401, "AUTH_REQUIRED", "Sign in to use ROYAL.");
     let user;
-    try { user = await auth(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check your sign-in. Nothing was done."); }
+    try {
+      user = passcode ? await passcode.verify(token[1]) : undefined;
+      if (user === undefined) user = await auth(token[1]);
+    } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check your sign-in. Nothing was done."); }
     if (!user) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
     /* House members may keep ROYAL current by sending the calculator's state,
        and do nothing else: they cannot read answers, decisions or activity. */
@@ -142,5 +158,7 @@ export async function fromEnv(env, { store, providerFactory } = {}) {
     auth = async (t) => (t === dev ? { id: "dev-owner", role: "owner" } : (env.ROYAL_IDENTITY_URL ? real(t) : null));
   }
   const allowedOrigins = String(env.ROYAL_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return { royal, auth, allowedOrigins };
+  const passcode = passcodeAuth({ passcode: env.ROYAL_OWNER_PASSCODE, secret: env.ROYAL_SESSION_SECRET, days: Number(env.ROYAL_SESSION_DAYS || 30) });
+  if (!passcode.configured) console.warn("ROYAL: passcode sign-in is off; set ROYAL_OWNER_PASSCODE (10+ characters) and ROYAL_SESSION_SECRET (32+ characters).");
+  return { royal, auth, allowedOrigins, passcode };
 }
