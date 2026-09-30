@@ -195,3 +195,8 @@ dialog form{display:grid;gap:var(--s2)} dialog .row{display:flex;gap:var(--s2);j
   #view-home>.bsec#b-decisions{grid-column:2;grid-row:2/span 8}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* ---- Personal realm: its own colour, so it can never be mistaken for the business */
+body.realm-personal{--lime:#9cc3e6;--limeDim:rgba(156,195,230,.10);--limeEdge:rgba(156,195,230,.45);--ink-on-lime:#070808}
+body.realm-personal .bar{border-bottom-color:rgba(156,195,230,.35)}
+.realmtag{color:var(--lime);letter-spacing:.12em;font-size:var(--t-xs)}

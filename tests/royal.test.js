@@ -168,7 +168,7 @@ test("approving a drafted message without a messenger records the approval and s
 
 test("the personal realm and other business lines are honestly not connected", async () => {
   const r = await royalWith();
-  const p = await ask(r, "What's on my calendar tomorrow?");
+  const p = await r.handle({ content: "What's on my calendar tomorrow?", realm: "PERSONAL", conversation_id: "c1" });
   assert.equal(p.status, "NOT_CONNECTED"); assert.equal(p.surface.realm, "PERSONAL");
   const t = await ask(r, "How is Tahir & Co doing this month?");
   assert.equal(t.status, "NOT_CONNECTED"); assert.match(t.summary, /won't mix them/);
@@ -219,4 +219,45 @@ test("agents, skills and domains are introspectable", async () => {
   const d = r.domains();
   assert.equal(d.find((x) => x.id === "royal_t").status, "CONNECTED");
   assert.equal(d.find((x) => x.id === "wealth").status, "NOT_CONNECTED");
+});
+
+
+/* -------------------------------------------- Business and Personal apart -- */
+test("the Business side refuses personal questions and points to Personal", async () => {
+  const r = await royalWith();
+  const a = await ask(r, "What's on my calendar tomorrow?");
+  assert.equal(a.surface.type, "realm_switch"); assert.equal(a.realm, "BUSINESS"); assert.equal(a.findings.length, 0);
+});
+test("the Personal side never sees business records, specialists or facts", async () => {
+  const prov = new ScriptedProvider({ answer: "x", based_on: [], unknowns: [], proposed_actions: [] });
+  const r = await royalWith(undefined, { provider: prov });
+  for (const q of ["What needs me?", "Who owes us money?", "status of Marcus Hill's chain", "State of the House", "Handle it", "What should I do with my savings?"]) {
+    const a = await r.handle({ content: q, realm: "PERSONAL", conversation_id: "c1" });
+    const txt = JSON.stringify(a);
+    assert.equal(a.realm, "PERSONAL", q);
+    assert.equal(a.findings.length, 0, q);
+    assert.deepEqual(a.delegations, [], q + " consulted a business specialist");
+    assert.ok(!/Marcus|Johnson|PRJ-|calculator|\$\d/.test(txt), q + " leaked business data: " + txt.slice(0, 200));
+  }
+  assert.equal(prov.calls.length, 0, "no business facts were sent to the model from the Personal side");
+});
+test("conversations do not cross realms", async () => {
+  const r = await royalWith();
+  await ask(r, "status of Marcus Hill's chain");
+  const p = await r.handle({ content: "why hasn't his project moved?", realm: "PERSONAL", conversation_id: "c1" });
+  assert.equal(p.entity, null);
+});
+test("decisions, activity and domains are listed per realm", async () => {
+  const r = await royalWith();
+  await r.decisions.create({ type: "GENERAL", title: "Business thing", requested_by_agent: "royal", realm: "BUSINESS" });
+  await r.decisions.create({ type: "GENERAL", title: "Personal thing", requested_by_agent: "royal", realm: "PERSONAL" });
+  assert.deepEqual((await r.decisions.list({ realm: "PERSONAL" })).map((d) => d.title), ["Personal thing"]);
+  assert.deepEqual((await r.decisions.list({ realm: "BUSINESS" })).map((d) => d.title), ["Business thing"]);
+  assert.ok((await r.audit.executiveLedger({ realm: "PERSONAL" })).every((e) => e.realm === "PERSONAL"));
+  assert.ok(r.domains("PERSONAL").every((d) => d.realm === "PERSONAL"));
+  assert.ok(r.domains("BUSINESS").every((d) => d.realm === "BUSINESS"));
+});
+test("an unknown realm is refused", async () => {
+  const a = await (await royalWith()).handle({ content: "hi", realm: "SECRET" });
+  assert.equal(a.status, "FAILED");
 });

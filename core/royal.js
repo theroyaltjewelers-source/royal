@@ -18,7 +18,7 @@ import { resolveEntity, ConversationContext } from "./context.js";
 import { route } from "./router.js";
 import { agentResult, validateResult } from "./result.js";
 import { UnavailableProvider, parseModelJson } from "./providers/provider.js";
-import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED } from "./enums.js";
+import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM } from "./enums.js";
 import { newId, clone, stableHash } from "./util.js";
 import { RoyalTConnector } from "../realms/business/royal-t/connector.js";
 import { SPECIALISTS, DEFAULT_OWNERS } from "../realms/business/royal-t/specialists.js";
@@ -35,7 +35,9 @@ export function normalizeCommand(input) {
   const modality = c.modality || MODALITY.text;
   if (!MODALITY[modality]) throw new Error("COMMAND_INVALID: unknown modality " + modality);
   if (!content.trim() && !c.skill) throw new Error("COMMAND_INVALID: empty command");
-  return { modality, content, skill: c.skill || null, context: c.context || {}, user: c.user || null,
+  const realm = c.realm || REALM.BUSINESS;
+  if (!REALM[realm]) throw new Error("COMMAND_INVALID: unknown realm " + realm);
+  return { modality, content, skill: c.skill || null, context: c.context || {}, user: c.user || null, realm,
     conversation_id: c.conversation_id || "default", timestamp: c.timestamp || Date.now() };
 }
 
@@ -176,18 +178,49 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
         unknowns: (p.value.unknowns || []).slice(0, 6).map(String), proposals } };
   }
 
+  /* ---------------------------------------------------------- personal --- */
+  async function handlePersonal(cmd, run_id) {
+    const convoKey = REALM.PERSONAL + ":" + cmd.conversation_id;
+    const pskill = cmd.skill && SKILLS[cmd.skill] && SKILLS[cmd.skill].realm === REALM.PERSONAL ? cmd.skill : "personal";
+    const ctx = { run_id, text: cmd.content, now: clock(), realm: REALM.PERSONAL, domains: domainState().filter((d) => d.realm === REALM.PERSONAL),
+      decisions, store, provider, conversation: conversations.get(convoKey) };
+    let out;
+    try { out = await SKILLS[pskill].run(ctx); }
+    catch (e) { out = { status: RUN_STATUS.FAILED, summary: "ROYAL could not complete that (" + (e.message || e) + ").", surface: { type: "text" } }; }
+    const result = agentResult({ agent: "royal", run_id, status: out.status || RUN_STATUS.OK, summary: out.summary, findings: out.findings || [],
+      sources: [], surface: out.surface || null, timestamp: clock() });
+    result.skill = pskill; result.realm = REALM.PERSONAL; result.connection = null; result.delegations = []; result.entity = null;
+    conversations.set(convoKey, { entity: null, last_skill: pskill, last_items: [] });
+    await audit.record({ actor: "royal", run_id, trigger: cmd.modality, action: "COMMAND_ANSWERED", summary: pskill + ": " + String(result.summary).slice(0, 160),
+      result: result.status, realm: REALM.PERSONAL });
+    return result;
+  }
+
   /* ------------------------------------------------------------ handle --- */
   async function handle(input) {
     let cmd;
     try { cmd = normalizeCommand(input); }
     catch (e) { return agentResult({ agent: "royal", run_id: newId("run"), status: RUN_STATUS.FAILED, summary: String(e.message) }); }
     const run_id = newId("run");
-    const convo = conversations.get(cmd.conversation_id);
+    /* The Personal realm is a separate room.  Nothing in it reads a business
+       connector, resolves a business record, consults a business specialist
+       or passes business facts to a model, and business answers never
+       include anything personal.  Conversations are kept apart as well. */
+    if (cmd.realm === REALM.PERSONAL) return handlePersonal(cmd, run_id);
+    const convoKey = REALM.BUSINESS + ":" + cmd.conversation_id;
+    const convo = conversations.get(convoKey);
     const latest = await connector.latest();
     const projects = latest ? latest.snapshot.projects : [];
     const res = resolveEntity(cmd.content, { projects, selected: cmd.context.selected_entity, recent: convo.entity });
     let r = cmd.skill ? { skill: cmd.skill, reason: "EXPLICIT", confidence: 1 } : route(cmd.content, { entityResolved: res.status === "RESOLVED", entityStrong: !!res.strong });
     if (!SKILLS[r.skill] && r.skill !== "open_question") r = { skill: "open_question", reason: "UNKNOWN_SKILL" };
+    if (SKILLS[r.skill] && (SKILLS[r.skill].realm || REALM.BUSINESS) !== REALM.BUSINESS) {
+      const res2 = agentResult({ agent: "royal", run_id, status: RUN_STATUS.OK, timestamp: clock(),
+        summary: "That belongs to your Personal side. Switch to Personal to ask it; the Business side does not look at personal matters.",
+        surface: { type: "realm_switch", to: REALM.PERSONAL } });
+      res2.skill = r.skill; res2.realm = REALM.BUSINESS;
+      return res2;
+    }
 
     const useEntity = res.status === "RESOLVED" && (res.strong || r.skill === "project_status");
     const base = { run_id, text: cmd.content, now: clock(), skill: r.skill, entity: useEntity ? res.entity : null, conversation: convo, command: cmd };
@@ -212,12 +245,12 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const result = agentResult({ agent: "royal", run_id, status: out.status || RUN_STATUS.OK, summary: out.summary, findings: out.findings || [],
       sources: latest ? [{ label: EVIDENCE.VERIFIED, source: "calculator", verified_at: latest.generated_at }] : [],
       unresolved_questions: out.unresolved || [], surface: out.surface || null, timestamp: clock() });
-    result.skill = r.skill; result.route = { reason: r.reason, confidence: r.confidence };
+    result.skill = r.skill; result.route = { reason: r.reason, confidence: r.confidence }; result.realm = REALM.BUSINESS;
     result.connection = await connector.status(clock());
     result.delegations = ctx.delegations.map((d) => ({ agent: d.agent, status: d.status, verified: d.verified, errors: d.errors || [] }));
     result.entity = base.entity ? { type: "project", id: base.entity.id, name: base.entity.name, client_name: base.entity.client && base.entity.client.name } : null;
 
-    conversations.set(cmd.conversation_id, {
+    conversations.set(convoKey, {
       entity: base.entity ? { id: base.entity.id } : convo.entity,
       last_skill: r.skill === "handle_it" ? convo.last_skill : r.skill,
       last_items: r.skill === "handle_it" ? [] : (result.findings || []).slice(0, 12),
@@ -258,7 +291,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     flags: F, provider,
     agents: () => registry.all().map((a) => ({ ...a })),
     skills: skillCatalog,
-    domains: domainState,
+    domains: (realm) => domainState().filter((d) => !realm || d.realm === realm),
     resolveDecision: (id, args) => decisions.resolve(id, args),
     status: async () => ({ calculator: await connector.status(clock()), provider: provider.status(), domains: domainState(), flags: F }),
   };

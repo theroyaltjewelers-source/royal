@@ -27,12 +27,13 @@ export class AuditService {
       error: e.error ? String(e.error.message || e.error) : null,
       executive: !!e.executive,
       key: e.key || null,
+      realm: e.realm || "BUSINESS",
     });
     return this.store.append("audit", rec);
   }
 
-  async executiveLedger({ limit = 100 } = {}) {
-    return (await this.store.readLog("audit", { limit: 5000 })).filter((r) => r.executive).slice(-limit).reverse();
+  async executiveLedger({ limit = 100, realm } = {}) {
+    return (await this.store.readLog("audit", { limit: 5000 })).filter((r) => r.executive && (!realm || (r.realm || "BUSINESS") === realm)).slice(-limit).reverse();
   }
 
   async developerLog({ limit = 500 } = {}) {

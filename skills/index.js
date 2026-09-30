@@ -17,7 +17,7 @@ import { draftFor } from "./drafts.js";
 const ALL = ["ace", "grace", "ledger", "forge"];
 
 function meta(id, name, agents, o = {}) {
-  return { id, name, version: "1.0.0", agent: "royal", agents, status: o.status || "ACTIVE",
+  return { id, name, version: "1.0.0", agent: "royal", agents, status: o.status || "ACTIVE", realm: o.realm || "BUSINESS",
     purpose: o.purpose || "", trigger: o.trigger || "Command or schedule", required_inputs: o.inputs || [],
     required_sources: o.sources || ["PROJECT_STATUS"], procedure: o.procedure || [],
     output_schema: "SkillOutput{summary,findings[],surface,data}", escalation_rules: o.escalation || "P0 and P1 items surface to Tahir.",
@@ -331,10 +331,12 @@ skill(meta("handle_it", "Handle It", ALL, { purpose: "Turn the last set of findi
 });
 
 /* --------------------------------------------------- outside the house --- */
-skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own domains: wealth, calendar, personal tasks.", sources: ["APPOINTMENT"] }), async (ctx) => {
+skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own domains: wealth, calendar, personal tasks.", sources: ["APPOINTMENT"], realm: "PERSONAL" }), async (ctx) => {
   const ds = ctx.domains.filter((d) => d.realm === "PERSONAL");
-  return { status: RUN_STATUS.NOT_CONNECTED, summary: "Your personal realm is not connected yet. ROYAL won't guess at your calendar, wealth or tasks.",
-    findings: [], surface: { type: "not_connected", realm: "PERSONAL", domains: ds } };
+  const connected = ds.filter((d) => d.status === "CONNECTED");
+  return { status: connected.length ? RUN_STATUS.OK : RUN_STATUS.NOT_CONNECTED,
+    summary: connected.length ? "Personal: " + connected.map((d) => d.name).join(", ") + " connected." : "Nothing personal is connected yet. ROYAL won't guess at your calendar, wealth or tasks, and your business records are never used here.",
+    findings: [], surface: { type: "personal_home", realm: "PERSONAL", domains: ds } };
 });
 skill(meta("other_business", "Other Business Lines", [], { purpose: "Tahir & Co. and Gold Buy." }), async (ctx) => {
   const ds = ctx.domains.filter((d) => ["tahir_and_co", "gold_buy"].indexOf(d.id) >= 0);

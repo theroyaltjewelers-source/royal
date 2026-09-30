@@ -54,3 +54,16 @@
 **Decision.** Internal writes need approval (`agent_internal_write` off). External sends have no executor (`agent_external_send` off). Money movement is prohibited autonomously.
 **Why.** The spec's V1 authority: read, analyse, recommend, draft, request approval.
 **Reversibility.** Each flag needs a new ADR before it is turned on.
+
+## ADR-008. ROYAL has its own sign-in
+
+**Decision.** ROYAL signs its owner in with its own passcode (`ROYAL_OWNER_PASSCODE`), checked by ROYAL's server, and issues its own signed session (`ROYAL_SESSION_SECRET`, 30 days). Email sign-in through the calculator's Supabase is removed from the ROYAL app.
+**Context.** Sharing the calculator's Supabase login meant every sign-in email returned to the calculator (Site URL), and the free plan cannot edit the email template. Tahir's direction: ROYAL must be separate from the calculator.
+**Tradeoffs.** One more secret to keep. No password reset by email: to change the passcode, change the environment variable. Five wrong attempts lock an address out for 15 minutes.
+**Reversibility.** High. The calculator still sends its state with its own Supabase token (ingest), which ROYAL continues to verify.
+
+## ADR-009. Business and Personal are separate rooms, enforced by the server
+
+**Decision.** Every command carries a realm. Personal commands are handled by a separate path that never reads a business connector, never resolves a business record, never consults a business specialist and never sends business facts to a model. Business commands refuse personal skills and point to the Personal side. Conversations, decisions, activity and domain lists are keyed or filtered by realm. The web app gives Personal its own colour, home, suggestions and views, and clears the screen on every switch.
+**Why.** Tahir's direction: the two sections must be completely separate.
+**Proved.** `tests/royal.test.js` ("Business and Personal apart"): personal answers contain no business names, amounts, IDs or specialist consultations; no model call is made from Personal with business facts; conversations do not cross; lists are per realm.

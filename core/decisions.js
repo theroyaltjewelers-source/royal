@@ -69,8 +69,8 @@ export class DecisionService {
 
   async get(id) { const r = await this.store.get("decisions", id); return r ? r.data : null; }
 
-  async list({ status } = {}) {
-    const all = (await this.store.list("decisions")).map((r) => r.data);
+  async list({ status, realm } = {}) {
+    const all = (await this.store.list("decisions")).map((r) => r.data).filter((d) => !realm || (d.realm || "BUSINESS") === realm);
     return (status ? all.filter((d) => d.status === status) : all).sort((a, b) => b.created_at - a.created_at);
   }
 

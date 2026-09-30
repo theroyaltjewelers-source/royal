@@ -20,7 +20,8 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&":
 const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-US");
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-let TOKEN = null, REALM = "BUSINESS";
+let TOKEN = null, REALM = (() => { try { return localStorage.getItem("royal.realm") === "PERSONAL" ? "PERSONAL" : "BUSINESS"; } catch (_) { return "BUSINESS"; } })();
+const R = () => "realm=" + REALM;
 const CONVO = "web-" + Math.random().toString(36).slice(2, 10);
 
 /* -------------------------------------------------------------- auth --- */
@@ -97,6 +98,7 @@ const SUGGEST = { BUSINESS: ["What needs me?", "State of the House", "Can I step
 function start(st) {
   $("signin").hidden = true; $("main").hidden = false; $("signOut").hidden = false;
   window.__prov = st.provider || {};
+  applyRealm();
   renderConn(st);
   renderChips();
   loadHome(); loadDecisionCount();
@@ -105,6 +107,7 @@ function start(st) {
 function renderConn(st) {
   const c = st.calculator || {}, p = st.provider || {};
   const chip = (label, ok, detail) => '<span class="cchip ' + (ok ? "on" : "off") + '"><span class="dot" aria-hidden="true"></span>' + esc(label) + ": " + esc(detail) + "</span>";
+  if (REALM === "PERSONAL") { $("conn").innerHTML = '<span class="cchip realmtag">PERSONAL · separate from the business</span>'; return; }
   $("conn").innerHTML = chip("Calculator", c.connected, c.connected ? c.age : "not connected") + chip("Language", p.status === "CONNECTED", p.status === "CONNECTED" ? "connected" : "not connected");
 }
 
@@ -113,12 +116,25 @@ function renderChips() {
 }
 $("chips").addEventListener("click", (e) => { const b = e.target.closest("[data-q]"); if (b) ask(b.dataset.q); });
 
-document.querySelectorAll(".realms button").forEach((b) => b.addEventListener("click", () => {
-  REALM = b.dataset.realm;
-  document.querySelectorAll(".realms button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-  renderChips();
-  if (REALM === "PERSONAL") ask("What's on my calendar tomorrow?"); else { $("answer").hidden = true; loadHome(); }
-}));
+/* Business and Personal are two separate rooms: their own colour, home,
+   suggestions, conversation, decisions and activity.  Switching clears
+   whatever was on screen, so nothing from one side is ever left showing on
+   the other.  The server enforces the same wall. */
+function applyRealm() {
+  document.body.classList.toggle("realm-personal", REALM === "PERSONAL");
+  const house = document.querySelector(".mark .house"); if (house) house.textContent = REALM === "PERSONAL" ? "TAHIR · PERSONAL" : "THE HOUSE OF ROYAL T";
+  document.querySelectorAll(".realms button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.realm === REALM)));
+  document.querySelectorAll('.views [data-view="agents"]').forEach((x) => { x.hidden = REALM === "PERSONAL"; });
+  $("ask").placeholder = REALM === "PERSONAL" ? "Ask about your personal side…" : "Ask ROYAL anything…";
+  $("answer").hidden = true; $("answer").innerHTML = "";
+  document.querySelectorAll(".view").forEach((v) => { v.innerHTML = ""; });
+}
+function switchRealm(to) {
+  REALM = to; try { localStorage.setItem("royal.realm", to); } catch (_) {}
+  applyRealm(); renderChips(); renderConn({ calculator: {}, provider: window.__prov || {} });
+  showView("home"); loadDecisionCount();
+}
+document.querySelectorAll(".realms button").forEach((b) => b.addEventListener("click", () => switchRealm(b.dataset.realm)));
 
 /* ----------------------------------------------------------- command --- */
 $("command").addEventListener("submit", (e) => { e.preventDefault(); const q = $("ask").value.trim(); if (q) { ask(q); $("ask").value = ""; } });
@@ -128,7 +144,7 @@ async function ask(q, extra = {}) {
   const w = $("working"); w.hidden = false;
   let i = 0; w.innerHTML = '<span class="pulse" aria-hidden="true"></span>' + STEPS[0];
   const t = setInterval(() => { i = Math.min(i + 1, STEPS.length - 1); w.lastChild.textContent = STEPS[i]; }, reduceMotion ? 1500 : 450);
-  const r = await api("POST", "/v1/command", { content: q, conversation_id: CONVO, ...extra });
+  const r = await api("POST", "/v1/command", { content: q, conversation_id: CONVO, realm: REALM, ...extra });
   clearInterval(t); w.hidden = true;
   const a = $("answer"); a.hidden = false;
   if (!r.ok) { a.innerHTML = '<div class="err"><b>That did not go through.</b> ' + esc(r.message || r.error) + "</div>"; return; }
@@ -205,6 +221,9 @@ const SURFACES = {
       "<h4>Unknown</h4><ul class=\"facts unknown\">" + a.unknown.map((u) => "<li>" + esc(u) + "</li>").join("") + "</ul>" +
       (s.items.length ? "<h4>Open items</h4>" + list(s.items) : "") + (s.decisions.length ? "<h4>Decisions</h4>" + s.decisions.map(decisionCard).join("") : "") + "</div>"; },
   clarify: (s) => '<ul class="pick">' + s.candidates.map((c) => '<li><button type="button" class="chip" data-q="status of ' + esc(c.id) + '">' + esc((c.client_name || "") + " · " + (c.name || "") + " · " + c.stage) + "</button></li>").join("") + "</ul>",
+  personal_home: (s) => '<div class="nc"><p class="kicker">Your personal side</p><dl class="lines">' + s.domains.map((d) => "<div><dt>" + esc(d.name) + "</dt><dd>" + esc(d.status === "CONNECTED" ? "Connected" : "Not connected yet") + "</dd></div>").join("") +
+    '</dl><p class="quiet">Nothing from the business appears here, and nothing personal appears on the Business side.</p></div>',
+  realm_switch: (s) => '<p><button type="button" class="primary" data-realm-go="' + esc(s.to) + '">Go to ' + (s.to === "PERSONAL" ? "Personal" : "Business") + "</button></p>",
   not_connected: (s) => '<div class="nc"><p class="big">NOT CONNECTED</p>' + (s.domains ? "<ul>" + s.domains.map((d) => "<li><b>" + esc(d.name) + "</b> " + esc(d.description || "") + "</li>").join("") + "</ul>" : "") + (s.detail ? '<p class="quiet">' + esc(s.detail) + "</p>" : "") + "</div>",
   handled: (s) => '<dl class="lines"><div><dt>Done</dt><dd>' + s.done.length + "</dd></div><div><dt>Waiting on your approval</dt><dd>" + s.pending.length + "</dd></div><div><dt>Could not act</dt><dd>" + s.refused.length + "</dd></div></dl>" +
     (s.pending.length ? '<button type="button" class="primary" data-view-go="decisions">Review decisions</button>' : "") + '<p class="quiet">' + esc(s.verification) + "</p>",
@@ -230,6 +249,7 @@ function decisionCard(d) {
 document.addEventListener("click", async (e) => {
   const q = e.target.closest("[data-q]"); if (q && !q.closest("#chips")) { ask(q.dataset.q); return; }
   const go = e.target.closest("[data-view-go]"); if (go) { showView(go.dataset.viewGo); return; }
+  const rg = e.target.closest("[data-realm-go]"); if (rg) { switchRealm(rg.dataset.realmGo); return; }
   const b = e.target.closest("[data-res]"); if (!b) return;
   const card = b.closest(".dcard"), id = card.dataset.id, res = b.dataset.res;
   let body = { resolution: res };
@@ -256,26 +276,26 @@ function showView(v) {
 }
 
 async function loadHome() {
-  const r = await api("POST", "/v1/command", { skill: "morning_briefing", content: "Briefing", conversation_id: CONVO + "-home", modality: "ui_action" });
+  const r = await api("POST", "/v1/command", { skill: REALM === "PERSONAL" ? "personal" : "morning_briefing", content: "Home", realm: REALM, conversation_id: CONVO + "-home", modality: "ui_action" });
   const el = $("view-home");
   if (!r.ok) { el.innerHTML = '<p class="err">' + esc(r.message) + "</p>"; return; }
   el.innerHTML = '<p class="summary home">' + esc(r.result.summary) + "</p>" + SURFACES[r.result.surface.type](r.result.surface, r.result);
   if (r.result.connection) renderConn({ calculator: r.result.connection, provider: window.__prov || {} });
 }
 async function loadDecisionCount() {
-  const r = await api("GET", "/v1/decisions?status=OPEN");
+  const r = await api("GET", "/v1/decisions?status=OPEN&" + R());
   const n = r.ok ? r.decisions.length : 0;
   $("decCount").textContent = n ? String(n) : ""; $("decCount").hidden = !n;
 }
 async function loadDecisions() {
-  const r = await api("GET", "/v1/decisions");
+  const r = await api("GET", "/v1/decisions?" + R());
   window.__decisions = r.decisions || [];
   const open = window.__decisions.filter((d) => d.status === "OPEN"), done = window.__decisions.filter((d) => d.status !== "OPEN");
   $("view-decisions").innerHTML = (open.length ? open.map(decisionCard).join("") : '<p class="empty">NO DECISIONS NEED YOU.</p>') +
     (done.length ? '<details class="healthy"><summary>' + done.length + " resolved</summary>" + done.map(decisionCard).join("") + "</details>" : "");
 }
 async function loadActivity() {
-  const r = await api("GET", "/v1/activity");
+  const r = await api("GET", "/v1/activity?" + R());
   const a = r.activity || [];
   $("view-activity").innerHTML = a.length ? '<ol class="ledger">' + a.map((x) => "<li><time>" + esc(new Date(x.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })) + "</time><span>" + esc(x.summary || x.action) + "</span></li>").join("") + "</ol>" : '<p class="empty">No activity recorded yet.</p>';
 }
@@ -286,6 +306,11 @@ async function loadAgents() {
     "<dl class=\"lines\"><div><dt>Status</dt><dd>" + esc(a.status.toLowerCase()) + "</dd></div><div><dt>Realms</dt><dd>" + esc(a.realms.join(", ").toLowerCase()) + "</dd></div><div><dt>Open items</dt><dd>" + ((byAgent[a.id] || []).length) + "</dd></div><div><dt>Permissions</dt><dd>" + esc(a.permission_profile) + "</dd></div></dl></article>").join("") + "</div>";
 }
 async function loadSystems() {
+  if (REALM === "PERSONAL") {
+    const d = await api("GET", "/v1/domains?" + R());
+    $("view-systems").innerHTML = '<dl class="lines">' + (d.domains || []).map((x) => "<div><dt>" + esc(x.name) + "</dt><dd>" + esc(x.status === "CONNECTED" ? "Connected" : "NOT CONNECTED") + "</dd></div>").join("") + "</dl>";
+    return;
+  }
   const r = await api("POST", "/v1/command", { skill: "system_status", content: "systems", conversation_id: CONVO + "-sys", modality: "ui_action" });
   $("view-systems").innerHTML = r.ok ? SURFACES.systems(r.result.surface) : '<p class="err">' + esc(r.message) + "</p>";
   if (r.ok) window.__prov = r.result.surface.provider;

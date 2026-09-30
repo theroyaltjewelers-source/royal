@@ -88,16 +88,18 @@ export function createHandler({ royal, auth, passcode = null, allowedOrigins = [
       if (req.method === "GET" && path === "/v1/status") return json(req, 200, { ok: true, ...(await royal.status()), user: { id: user.id } });
       if (req.method === "GET" && path === "/v1/agents") return json(req, 200, { ok: true, agents: royal.agents() });
       if (req.method === "GET" && path === "/v1/skills") return json(req, 200, { ok: true, skills: royal.skills() });
-      if (req.method === "GET" && path === "/v1/domains") return json(req, 200, { ok: true, domains: royal.domains() });
-      if (req.method === "GET" && path === "/v1/activity") return json(req, 200, { ok: true, activity: await royal.audit.executiveLedger({ limit: 100 }) });
+      const realmQ = url.searchParams.get("realm") || undefined;
+      if (realmQ && ["BUSINESS", "PERSONAL"].indexOf(realmQ) < 0) return fail(req, 400, "BAD_REALM", "Realm must be BUSINESS or PERSONAL.");
+      if (req.method === "GET" && path === "/v1/domains") return json(req, 200, { ok: true, domains: royal.domains(realmQ) });
+      if (req.method === "GET" && path === "/v1/activity") return json(req, 200, { ok: true, activity: await royal.audit.executiveLedger({ limit: 100, realm: realmQ }) });
       if (req.method === "GET" && path === "/v1/developer/log") return json(req, 200, { ok: true, log: await royal.audit.developerLog({ limit: 500 }) });
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
-        return json(req, 200, { ok: true, decisions: await royal.decisions.list({ status }) });
+        return json(req, 200, { ok: true, decisions: await royal.decisions.list({ status, realm: realmQ }) });
       }
       if (req.method === "POST" && path === "/v1/command") {
         const b = await body(req);
-        const r = await royal.handle({ content: b.content, modality: b.modality || "text", skill: b.skill || null, context: b.context || {},
+        const r = await royal.handle({ content: b.content, modality: b.modality || "text", skill: b.skill || null, context: b.context || {}, realm: b.realm || "BUSINESS",
           conversation_id: String(b.conversation_id || user.id).slice(0, 80), user: { id: user.id } });
         return json(req, 200, { ok: true, result: r });
       }

@@ -104,3 +104,49 @@ test("the file store is written owner-readable only", async () => {
   assert.equal((await again.get("tasks", "t1")).data.a, 1, "survives a restart");
   rmSync(path);
 });
+
+/* ------------------------------------------------ ROYAL's own passcode -- */
+import { passcodeAuth } from "../server/passcode.js";
+const PASS = "correct horse battery", SECRET = "s".repeat(40);
+function passApp(clock) {
+  const royal = createRoyal({ store: new MemoryStore() });
+  const passcode = passcodeAuth({ passcode: PASS, secret: SECRET, clock });
+  const handler = createHandler({ royal, auth: async () => null, passcode });
+  const call = (m, p, { token, body, ip = "1.2.3.4" } = {}) => handler(new Request("https://royal.test" + p, { method: m,
+    headers: { "Content-Type": "application/json", "X-Forwarded-For": ip, ...(token ? { Authorization: "Bearer " + token } : {}) }, body: body ? JSON.stringify(body) : undefined }));
+  return { call, royal };
+}
+test("the right passcode signs in; the session opens ROYAL with no email and no Supabase", async () => {
+  const { call } = passApp();
+  const r = await (await call("POST", "/v1/login", { body: { passcode: PASS } })).json();
+  assert.equal(r.ok, true); assert.match(r.token, /^rs1\./);
+  const st = await call("GET", "/v1/status", { token: r.token });
+  assert.equal(st.status, 200);
+  assert.equal((await call("POST", "/v1/command", { token: r.token, body: { content: "What needs me?" } })).status, 200);
+});
+test("a wrong passcode is refused, and five wrong tries lock that address out", async () => {
+  const { call } = passApp();
+  for (let i = 0; i < 5; i++) assert.equal((await call("POST", "/v1/login", { body: { passcode: "nope" + i } })).status, 401);
+  assert.equal((await call("POST", "/v1/login", { body: { passcode: PASS } })).status, 429);
+  assert.equal((await call("POST", "/v1/login", { body: { passcode: PASS }, ip: "5.6.7.8" })).status, 200, "another address is unaffected");
+});
+test("a tampered or expired session is refused", async () => {
+  let now = Date.now();
+  const { call } = passApp(() => now);
+  const { token } = await (await call("POST", "/v1/login", { body: { passcode: PASS } })).json();
+  const [, payload, sig] = token.split(".");
+  const forged = "rs1." + Buffer.from(JSON.stringify({ sub: "owner", iat: 0, exp: 9e15 })).toString("base64url") + "." + sig;
+  assert.equal((await call("GET", "/v1/status", { token: forged })).status, 401);
+  assert.equal((await call("GET", "/v1/status", { token: "rs1." + payload + ".AAAA" })).status, 401);
+  now += 31 * 86400000;
+  assert.equal((await call("GET", "/v1/status", { token })).status, 401, "expired after 30 days");
+});
+test("without a configured passcode, login says so and no session can be forged", async () => {
+  const royal = createRoyal({ store: new MemoryStore() });
+  const passcode = passcodeAuth({ passcode: "short", secret: "x" });
+  const h = createHandler({ royal, auth: async () => null, passcode });
+  const r = await h(new Request("https://royal.test/v1/login", { method: "POST", body: JSON.stringify({ passcode: "short" }) }));
+  assert.equal(r.status, 503);
+  const m = await (await h(new Request("https://royal.test/v1/login-methods"))).json();
+  assert.equal(m.passcode, false);
+});

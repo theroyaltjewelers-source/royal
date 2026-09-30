@@ -10,7 +10,8 @@ Client identities and what they bought, project economics, payments and receivab
 
 | Boundary | Control |
 |---|---|
-| Internet to ROYAL API | Bearer token verified with Supabase auth (`/auth/v1/user`). Owner allow-list `ROYAL_OWNER_IDS`. Every route except `/v1/health` requires it. Knowing the URL grants nothing. |
+| Owner sign-in | ROYAL passcode (`ROYAL_OWNER_PASSCODE`), compared in constant time; five failures per address per 15 minutes; sessions signed with HMAC-SHA256 (`ROYAL_SESSION_SECRET`) and expiring after 30 days (ADR-008). Tested: wrong passcode, lockout, forged and expired sessions. |
+| Internet to ROYAL API | ROYAL session, or a bearer token verified with Supabase auth (`/auth/v1/user`). Owner allow-list `ROYAL_OWNER_IDS`. Every route except `/v1/health` requires it. Knowing the URL grants nothing. |
 | House member to ROYAL | `ROYAL_MEMBER_IDS` may **only** `POST /v1/ingest/calculator`. They cannot read answers, decisions or activity. **Fixed:** without this, only Tahir's open calculator could keep ROYAL current. |
 | Browser origin | CORS granted only to `ROYAL_ALLOWED_ORIGINS`. Static pages send CSP, nosniff and no-referrer. |
 | Calculator page to ROYAL | The calculator ships its **own copy** of `royal-embed.js` and only makes API calls to ROYAL. **Fixed:** the first design loaded the script from ROYAL's origin, which would have let a compromised ROYAL host run code inside the calculator with its session. A test fails if the two copies drift. |
