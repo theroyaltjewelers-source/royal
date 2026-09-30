@@ -18,7 +18,7 @@
 | MEDIUM | 1.25 | 4 | yes |
 | LOW | 0.6 | 3 | no |
 
-Phones start on MEDIUM, larger screens on HIGH. The renderer watches its own frame times and steps down a tier when it cannot keep up (average frame over 28 ms across 90 frames). A step down is remembered on that device, so a slow phone does not start high every time. Tahir can choose a tier in Systems; the choice is remembered on that device.
+Every device starts on HIGH, so a phone shows the same Core as a desktop. (A phone at HIGH draws fewer pixels than a desktop at HIGH: 390x844 against 1366x768, both at most 1.75 pixels per point.) The renderer watches its own frame times and steps down a tier only when it truly cannot keep up: an average frame over 45 ms (under about 22 fps) across 90 frames, or over 80 ms across 8. A screen capped at 30 fps, such as an iPhone in Low Power Mode, is not struggling and keeps its tier. A step down lasts for that visit only and is never saved. Tahir can choose a tier in Systems; that choice is saved on the device (`royal.quality.chosen`). The older key `royal.quality`, which saved automatic step-downs and could leave a phone on LOW for good, is cleared on start.
 
 ## 3. Saving power
 

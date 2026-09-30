@@ -68,6 +68,7 @@ const voice = new Voice({
   onError: (code, msg) => { if (msg) { stage.setCaption(msg, { quiet: true }); openType(); } },
   onSpeechBoundary: () => core.pulse(0.55),
   onSpeaking: (on) => { core.setSpeaking(on); document.body.dataset.speaking = on ? "1" : "0"; },
+  audio: () => sound.ac,   /* the context the first touch unlocked, so iPhone plays ROYAL's voice */
 });
 
 /* --------------------------------------------------------- session --- */
@@ -157,6 +158,8 @@ let INTEL = null, rt = null;
 async function loadIntelligence() {
   const r = await api("GET", "/v1/intelligence/status");
   INTEL = r.ok ? r : null;
+  /* ROYAL's one voice, from the server, on every device (Business only). */
+  voice.useServer(INTEL && INTEL.spoken_voice === "AVAILABLE" ? { ready: () => REALM === "BUSINESS", fetch: speechFor } : null);
   if (INTEL && INTEL.realtime_voice === "AVAILABLE" && !rt) {
     rt = new RealtimeVoice({ api, ask: askFromVoice, realm: () => REALM,
       onState: (s) => {
@@ -170,6 +173,11 @@ async function loadIntelligence() {
       onLevel: (a) => { core.setAmplitude(a); core.pulse(a * 0.6); },
       onError: (m) => { stage.setCaption(m, { quiet: true }); } });
   }
+}
+async function speechFor(text, signal) {
+  const r = await fetch((CFG.API || "") + "/v1/voice/speak?realm=" + REALM, { method: "POST", signal,
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN }, body: JSON.stringify({ text: text.slice(0, 1200) }) });
+  return r.ok ? r.arrayBuffer() : null;
 }
 async function askFromVoice(text) {
   for (let i = 0; i < 40 && busy; i++) await wait(250);
@@ -272,6 +280,22 @@ document.addEventListener("visibilitychange", pressEnd);
 /* A long press on a phone must not open a text-selection or context menu over the Core. */
 function noHoldMenu(e) { if (lastPointer !== "mouse") e.preventDefault(); }
 for (const id of ["wake", "core"]) { $(id).addEventListener("pointerdown", pressStart, { passive: true }); $(id).addEventListener("contextmenu", noHoldMenu); }
+
+/* Touch anywhere.  With an answer showing, the column of objects covers most
+   of a phone's screen (on a wide screen it sits to one side and the Core's
+   open space stays touchable).  A tap on the column's empty space, the
+   words or the gaps between cards, is a touch on the Core too, so the
+   whole screen answers on every device.  Cards, links and controls keep
+   their own taps, a scroll is never a tap, and selecting text wakes nothing. */
+const OWN_TAP = "a, button, input, textarea, select, label, summary, details, [role=button], [tabindex], .obj";
+$("column").addEventListener("click", (e) => {
+  if (document.body.dataset.layout !== "content" || e.target.closest(OWN_TAP)) return;
+  const sel = window.getSelection && window.getSelection(); if (sel && String(sel).trim()) return;
+  if (!$("sheet").hidden) return closeSheet();
+  core.touchAt(e.clientX, e.clientY); core.press(true); setTimeout(() => core.press(false), 120);
+  if (e.pointerType === "touch" || e.pointerType === "pen") sound.tap();
+  wake(e);
+});
 
 $("wake").addEventListener("click", wake);
 $("core").addEventListener("click", (e) => { if (!$("sheet").hidden) return closeSheet(); wake(e); });

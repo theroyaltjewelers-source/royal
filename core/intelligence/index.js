@@ -58,6 +58,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
       research: r, contacts: c, knowledge: knowledge ? { status: "CONNECTED", ...knowledge.stats() } : { status: "NOT_CONNECTED" },
       email: email ? email.status() : { status: "NOT_CONFIGURED", detail: "RESEND_API_KEY and ROYAL_EMAIL_FROM are not set." },
       sending: flags.agent_external_send ? "ENABLED" : "DISABLED", realtime_voice: flags.realtime_voice && caps().realtime_voice ? "AVAILABLE" : flags.realtime_voice ? "NOT_CONFIGURED" : "DISABLED",
+      spoken_voice: flags.spoken_voice && caps().speech ? "AVAILABLE" : flags.spoken_voice ? "NOT_CONFIGURED" : "DISABLED",
       grok_bots: !bridge ? "NOT_CONNECTED" : bridge.enabled && !bridge.enabled() ? "DISABLED" : "CONNECTED", agent_orchestration: flags.advanced_agent_orchestration ? "ENABLED" : "DISABLED",
     };
   }

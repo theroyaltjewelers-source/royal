@@ -28,7 +28,7 @@ import { parseModelJson } from "./provider.js";
 function clip(s, n = 240) { return String(s || "").replace(/\s+/g, " ").slice(0, n); }
 
 export class GrokProvider {
-  constructor({ apiKey, model, fastModel = null, voiceModel = "grok-voice-latest", voice = "eve", baseUrl = "https://api.x.ai/v1", fetchImpl = globalThis.fetch, timeoutMs = 45000, metrics = null }) {
+  constructor({ apiKey, model, fastModel = null, voiceModel = "grok-voice-latest", voice = "ara", baseUrl = "https://api.x.ai/v1", fetchImpl = globalThis.fetch, timeoutMs = 45000, metrics = null }) {
     this.id = "grok";
     this._key = apiKey || null;
     this.model = model || null;
@@ -53,7 +53,7 @@ export class GrokProvider {
      on the model family; xAI documents them for the Grok 4 family. */
   capabilities() {
     const on = this.status().status !== CONNECTION.NOT_CONNECTED;
-    return { structured_output: on, tool_calling: on, search: on, x_search: on, vision: on, realtime_voice: !!this._key, embeddings: false, reasoning_effort: false };
+    return { structured_output: on, tool_calling: on, search: on, x_search: on, vision: on, realtime_voice: !!this._key, speech: !!this._key, embeddings: false, reasoning_effort: false };
   }
 
   modelFor(level) { return level !== undefined && level <= 1 && this.fastModel ? this.fastModel : this.model; }
@@ -184,6 +184,38 @@ export class GrokProvider {
     } catch (e) {
       return { ok: false, failed_because: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK", retryable: true };
     }
+  }
+
+  /* ROYAL's spoken voice: text in, MP3 out, through xAI text to speech
+     (POST /v1/tts).  The same voice as realtime voice, so ROYAL sounds the
+     same on every device and in both voice modes.  Returns the audio bytes;
+     the key never leaves the server. */
+  async speech({ text, voice = this.voice, timeout_ms = 20000 } = {}) {
+    if (!this._key) return { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", retryable: false };
+    const words = String(text || "").trim();
+    if (!words) return { ok: false, failed_because: "SPEECH_EMPTY", retryable: false };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeout_ms);
+    const t0 = Date.now();
+    try {
+      const r = await this.fetch(this.baseUrl + "/tts", {
+        method: "POST", signal: ctl.signal,
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key, Accept: "audio/mpeg" },
+        body: JSON.stringify({ text: words, voice_id: voice, language: "en", output_format: { codec: "mp3", sample_rate: 44100, bit_rate: 128000 } }),
+      });
+      if (!r.ok) {
+        let j = null; try { j = await r.json(); } catch (_) { j = null; }
+        /* xAI's reason goes to the page, so a key quoted in it is removed first. */
+        const detail = clip(j && j.error && (j.error.message || j.error)).split(this._key).join("[key]").replace(/xai-[A-Za-z0-9]{8,}/g, "[key]");
+        return { ok: false, failed_because: "PROVIDER_HTTP_" + r.status, detail, retryable: r.status >= 500 || r.status === 429 };
+      }
+      const audio = new Uint8Array(await r.arrayBuffer());
+      if (!audio.length) return { ok: false, failed_because: "PROVIDER_REPLY_UNEXPECTED", retryable: true };
+      if (this.metrics) this.metrics.observe("provider.speech", Date.now() - t0);
+      return { ok: true, audio, type: "audio/mpeg", voice };
+    } catch (e) {
+      return { ok: false, failed_because: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK", retryable: true };
+    } finally { clearTimeout(timer); }
   }
 
   /* A tiny real call, so Tahir can see the connection work (or see xAI's

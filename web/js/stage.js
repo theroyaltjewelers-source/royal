@@ -35,7 +35,9 @@ export class Stage {
       const left = Math.round(W * 0.44), width = Math.min(680, W - left - 40);
       return { core: { cx, cy, r }, col: { left, width, top: 56 } };
     }
-    const r = W < 600 ? 0.1 : 0.085, px = r * m;
+    /* Risen above the answer, the Core stays large enough to see it breathe
+       and speak, as it does beside the answer on a wide screen. */
+    const r = W < 600 ? 0.135 : 0.11, px = r * m;
     const cy = (px * 1.25 + 40) / H;
     return { core: { cx: 0.5, cy, r }, col: { left: Math.max(16, (W - 620) / 2), width: Math.min(620, W - 32), top: cy * H + px * 1.3 + 16 } };
   }
@@ -134,6 +136,8 @@ export class Stage {
       const gap = Math.min(96, (innerWidth / 2 - c.r * 1.4 - 24) / Math.ceil(n / 2));
       pts = list.map((_, i) => { const side = i % 2 ? 1 : -1, k = Math.floor(i / 2); return { x: c.x + side * (c.r * 1.6 + 40 + k * gap), y: c.y - 8 + k * 46 }; });
     }
+    /* Every node and its name stay on screen, however narrow it is. */
+    const edge = 48; pts = pts.map((p) => ({ x: Math.max(edge, Math.min(innerWidth - edge, p.x)), y: p.y }));
     Array.from(this.agents.children).forEach((el, i) => { el.style.left = pts[i].x + "px"; el.style.top = pts[i].y + "px"; });
     this.core.setNodes(pts.map((p, i) => ({ x: p.x, y: p.y, s: list[i].state === "not_connected" ? 0.25 : 1 })));
     if (fresh && this.reduced) this.agents.classList.add("on");

@@ -30,7 +30,7 @@ Lora carries ROYAL's voice (captions, titles, drafts). Poppins carries labels an
 
 (c) **Content on a wide screen.** The Core moves to the left third and stays large; the column sits to the right.
 
-(d) **Agent nodes** sit on an arc above the Core (rest, wide) or either side of it (risen). Each is a point of light, its name and its state.
+(d) **Agent nodes** sit on an arc above the Core (rest, wide) or either side of it (risen), never closer than 48 px to the screen's edge. Each is a point of light, its name and its state.
 
 ## 5. Objects
 

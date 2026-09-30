@@ -77,9 +77,9 @@ Both are needed for `configured()`. Sending also needs flag `agent_external_send
 | Variable | Default | Meaning | Secret |
 |---|---|---|---|
 | `ROYAL_VOICE_MODEL` | `grok-voice-latest` | Realtime voice model | no |
-| `ROYAL_VOICE` | `eve` | Voice name | no |
+| `ROYAL_VOICE` | `ara` | ROYAL's voice, for spoken replies and realtime voice alike. xAI voices: `ara` (warm, conversational, female), `eve` (energetic, female), `leo`, `rex`, `sal` (male) | no |
 
-Voice also needs `XAI_API_KEY` and flag `realtime_voice`, and is offered on the Business side only (`POST /v1/voice/session?realm=PERSONAL` returns 409 `VOICE_BUSINESS_ONLY`).
+ROYAL's spoken replies (`POST /v1/voice/speak`, flag `spoken_voice`, on) and realtime voice (`POST /v1/voice/session`, flag `realtime_voice`, off) both need `XAI_API_KEY` and both are Business only (409 `SPEECH_BUSINESS_ONLY` and `VOICE_BUSINESS_ONLY` for `realm=PERSONAL`). Spoken replies cost per reply at xAI; set `ROYAL_FLAGS={"spoken_voice":false}` to return every device to its own voice. If `ROYAL_VOICE` is set to `eve` in Render from before, remove it (or set it to `ara`) to hear the new voice.
 
 ## 10. Grok Bot bridge
 
@@ -129,6 +129,7 @@ Use a database separate from the calculator's Supabase project: ROYAL is a separ
 | `email_discovery` | false | Allows paid Hunter and Apollo lookups |
 | `email_verification` | false | Allows paid Hunter verification |
 | `realtime_voice` | false | Allows `POST /v1/voice/session` |
+| `spoken_voice` | true | ROYAL's one voice: spoken replies come from `POST /v1/voice/speak` (xAI text to speech) on every device, Business only; off, each device uses its own voice |
 | `advanced_agent_orchestration` | false | Allows delegation to external Grok Bots; each delegation still passes the permission gate as `delegate_to_bot` |
 
 `GET /v1/intelligence/status` shows the merged flags and each part's status.

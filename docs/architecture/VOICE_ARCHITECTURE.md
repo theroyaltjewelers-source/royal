@@ -11,7 +11,7 @@ Voice is another way into the same ROYAL. A spoken sentence becomes a command wi
 | Path | When it is used | Recognition | Speech |
 |---|---|---|---|
 | Realtime voice | `intelligence.status().realtime_voice` is AVAILABLE: flag `realtime_voice` on and the provider reports `realtime_voice` (`XAI_API_KEY` set) | xAI realtime voice, server-side voice activity detection | xAI realtime voice, streamed PCM |
-| Browser speech | Every other case, and whenever realtime cannot start | The browser's `SpeechRecognition` | The browser's `speechSynthesis` |
+| Browser speech | Every other case, and whenever realtime cannot start | The browser's `SpeechRecognition` | ROYAL's voice from the server (section 5), else the browser's `speechSynthesis` |
 
 `web/js/app.js#loadIntelligence` reads `/v1/intelligence/status` after sign-in and creates a `RealtimeVoice` only when it says AVAILABLE. `realtime_voice` is off by default (`DEFAULT_FLAGS`, `core/permissions.js`), so the default is browser speech. With the flag on but no key, the status is NOT_CONFIGURED.
 
@@ -73,13 +73,19 @@ Voice is another way into the same ROYAL. A spoken sentence becomes a command wi
 
 ## 5. Browser Speech: Output
 
-(a) The browser's speech synthesis speaks ROYAL's sentence (the spec's `speech`). Dollar amounts are read as dollars. Word boundaries pulse the Core.
+ROYAL has one voice on every device (ADR-014). Before this, each device spoke with its own installed voices, so an iPhone and a desktop sounded different.
+
+(a) **ROYAL's voice.** When `/v1/intelligence/status` reports `spoken_voice: AVAILABLE` (flag `spoken_voice`, on by default, and `XAI_API_KEY` set), `web/js/voice.js` sends ROYAL's sentence (the spec's `speech`) to `POST /v1/voice/speak?realm=BUSINESS` and plays the MP3 that comes back through Web Audio. The server calls xAI text to speech (`GrokProvider.speech()`, `POST https://api.x.ai/v1/tts`) with the voice in `ROYAL_VOICE`, default `ara`, a warm woman's voice. Realtime voice uses the same voice, so both paths sound alike. The loudness of the voice moves the Core, and a rising syllable pulses it. The audio plays through the page's `AudioContext`, which the first touch unlocks, so it also plays on iPhone.
+
+(b) **The route.** Owner only. Text is collapsed to single spaces, required, and at most 1,200 characters. Refusals, each a plain sentence: 409 `SPEECH_DISABLED` (flag off), 409 `SPEECH_BUSINESS_ONLY` (`realm=PERSONAL`: nothing from the Personal side reaches xAI), 409 `SPEECH_NOT_CONFIGURED` (no key), 400 `TEXT_REQUIRED` or `TEXT_TOO_LONG`, 502 with xAI's reason. The API key stays on the server. The last 64 phrases are cached in memory per process, so a phrase ROYAL says often is paid for once; failures are not cached. Nothing is audited: a spoken reply repeats an answer that is already recorded.
+
+(c) **The device's voice** takes over for the same words whenever ROYAL's voice cannot speak: in Personal, with the flag off or no key, or when the request or decoding fails before the first sound. A reply is never silent because of the server. The device voice is chosen from a preference list (Daniel, Google UK English Male, Arthur, Aaron, Google US English, then any English voice) at speaking time, because iOS often has no voice list when the page opens. Dollar amounts are read as dollars. Word boundaries pulse the Core.
 
 (b) Spoken replies can be turned off (the corner mark or the menu). The words always remain on screen.
 
 ## 6. Browser Speech: Barge-in
 
-Touching the Core, pressing Escape, typing, or starting to listen stops ROYAL mid-sentence.
+Touching the Core, pressing Escape, typing, or starting to listen stops ROYAL mid-sentence, whichever voice is speaking. With ROYAL's voice, a request still on its way is cancelled and its audio is never played if it arrives late.
 
 ## 7. Approval
 
@@ -87,7 +93,7 @@ A spoken "yes" never approves a decision, on either path. "Send it" by voice cre
 
 ## 8. Flags
 
-`realtime_voice` (default off) gates the realtime path. `voice_input` (default off) is reserved: no code reads it, and browser speech works regardless.
+`realtime_voice` (default off) gates the realtime path. `spoken_voice` (default on) gates ROYAL's voice from the server; off, every device uses its own voice again. `voice_input` (default off) is reserved: no code reads it, and browser speech works regardless.
 
 ## 9. What Is Tested, and What Is Not
 
@@ -95,6 +101,8 @@ Tested (`tests/intelligence.test.js`, "realtime voice client: PCM conversion and
 
 Tested through the handler (`tests/server.test.js`, "voice session: off by default, Business only, and only a short-lived token ever leaves"): 409 with the flag off; 409 `VOICE_BUSINESS_ONLY` for `realm=PERSONAL`; with the flag on and a fake xAI, `realm=BUSINESS` returns 200 with the short-lived token and without the API key.
 
-Untested without an `XAI_API_KEY`: the `client_secrets` request against the live service, the WebSocket subprotocol and event names, the audio worklet, playback scheduling, echo cancellation, real barge-in timing and dropped connections. `VOICE_NOT_CONFIGURED` and the 502 path have no test. The client's realm parameter and the stop on a realm switch have no automated test. Browser speech (`web/js/voice.js`) has no automated test.
+Untested without an `XAI_API_KEY`: the `client_secrets` request against the live service, the WebSocket subprotocol and event names, the audio worklet, playback scheduling, echo cancellation, real barge-in timing and dropped connections. `VOICE_NOT_CONFIGURED` and the 502 path have no test. The client's realm parameter and the stop on a realm switch have no automated test. Browser speech recognition has no automated test beyond the double-start guard in `tests/web.test.js`.
+
+Tested for ROYAL's voice (`tests/voice.test.js`): the default voice (Ara) and the flag; the exact request sent to xAI and the MP3 returned; the cache; Business only, owner only and every refusal; a 502 carrying xAI's reason without the key, and failures not cached; the status line; and, in `web/js/voice.js` against a stand-in browser, playback from the server with the device voice silent, the device voice in Personal and after a failed fetch (ending once), barge-in before and during the sound, and mute. Checked by hand in Chromium at 390x844 and 1366x768 against a stand-in xAI: the phone requested voice `ara`, the desktop replayed the same sentence from the cache, and Personal used the device voice. Untested without an `XAI_API_KEY`: the live `/v1/tts` service and its audio quality and speed.
 
 `RealtimeVoice.sayText()` (typing into the live voice conversation) exists but nothing calls it: typing while realtime is on goes to `/v1/command` as usual.

@@ -25,6 +25,10 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Max-Age": "600" };
   }
   const SEC = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" };
+  /* Spoken replies: a short cache so a phrase ROYAL says often (a greeting,
+     "Nothing needs you") is paid for once per process. */
+  const SPEECH_MAX = 1200, SPEECH_CACHE = 64;
+  const speechCache = new Map();
   function json(req, status, body) {
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SEC, ...cors(req) } });
   }
@@ -240,6 +244,31 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
         await royal.audit.record({ actor: "tahir", action: "VOICE_SESSION", summary: "Started a realtime voice session." });
         return json(req, 200, { ok: true, token: v.token, expires_at: v.expires_at, ws_url: v.ws_url, model: v.model, session: voiceSessionConfig(v.voice) });
       }
+      if (req.method === "POST" && path === "/v1/voice/speak") {
+        /* ROYAL's one voice: the words of a reply, spoken by the server's
+           voice, so every device sounds the same.  Business only, like
+           realtime voice: nothing from the Personal side reaches xAI.  The
+           browser falls back to the device's own voice on any refusal. */
+        if (!royal.flags.spoken_voice) return fail(req, 409, "SPEECH_DISABLED", "ROYAL's voice is switched off (spoken_voice). The device's own voice is used.");
+        if (realmQ === "PERSONAL") return fail(req, 409, "SPEECH_BUSINESS_ONLY", "ROYAL's voice speaks on the Business side only. The device's own voice is used in Personal.");
+        if (!royal.provider.speech || !(royal.provider.capabilities && royal.provider.capabilities().speech))
+          return fail(req, 409, "SPEECH_NOT_CONFIGURED", "ROYAL's voice needs XAI_API_KEY on the server.");
+        const b = await body(req);
+        const text = String((b && b.text) || "").replace(/\s+/g, " ").trim();
+        if (!text) return fail(req, 400, "TEXT_REQUIRED", "Nothing to say.");
+        if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "ROYAL speaks at most " + SPEECH_MAX + " characters at a time.");
+        const key = royal.provider.voice + "\u0000" + text;
+        let audio = speechCache.get(key);
+        if (audio) { speechCache.delete(key); speechCache.set(key, audio); }
+        else {
+          const s = await royal.provider.speech({ text });
+          if (!s.ok) return json(req, 502, { ok: false, error: s.failed_because, message: "The voice service did not answer" + (s.detail ? ": " + s.detail : ".") });
+          audio = s.audio;
+          speechCache.set(key, audio);
+          if (speechCache.size > SPEECH_CACHE) speechCache.delete(speechCache.keys().next().value);
+        }
+        return new Response(audio, { status: 200, headers: { "Content-Type": "audio/mpeg", "Content-Length": String(audio.length), ...SEC, ...cors(req) } });
+      }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
         return json(req, 200, { ok: true, decisions: await royal.decisions.list({ status, realm: realmQ }) });
@@ -321,7 +350,7 @@ export async function fromEnv(env, { store, providerFactory, extras = {} } = {})
    to use it for anything about the House, the world, people or actions, so
    voice and text share one intelligence, one permission engine and one
    audit.  It is told never to claim an action happened. */
-export function voiceSessionConfig(voice = "eve") {
+export function voiceSessionConfig(voice = "ara") {
   return {
     voice, turn_detection: { type: "server_vad" },
     audio: { input: { format: { type: "audio/pcm", rate: 24000 } }, output: { format: { type: "audio/pcm", rate: 24000 } } },
