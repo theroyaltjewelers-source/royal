@@ -13,7 +13,9 @@ const CONVO = "web-" + Math.random().toString(36).slice(2, 10);
 /* -------------------------------------------------------------- auth --- */
 async function boot() {
   if (CFG.IDENTITY_URL && CFG.IDENTITY_ANON_KEY) {
-    await new Promise((ok, no) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+    try {
+      await new Promise((ok, no) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+    } catch (_) { return showSignIn("The sign-in library could not load. Check your connection and reload."); }
     SUPA = window.supabase.createClient(CFG.IDENTITY_URL, CFG.IDENTITY_ANON_KEY);
     const { data } = await SUPA.auth.getSession();
     if (data && data.session) TOKEN = data.session.access_token;
@@ -30,7 +32,10 @@ function showSignIn(msg) {
   $("signin").hidden = false; $("main").hidden = true;
   $("devBox").hidden = !CFG.DEV;
   if (msg) $("signinStatus").textContent = msg;
-  if (!SUPA) $("signinForm").hidden = true;
+  if (!SUPA) {
+    $("signinForm").hidden = true;
+    if (!msg) $("signinStatus").textContent = "Email sign-in is not set up: web/config.js has no IDENTITY_URL or IDENTITY_ANON_KEY, so ROYAL cannot send a sign-in link.";
+  }
 }
 $("signinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
