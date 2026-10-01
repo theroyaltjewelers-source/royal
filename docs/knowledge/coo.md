@@ -10,7 +10,7 @@ Map the process as it actually runs, step by step, with owners, inputs, outputs 
 
 ## Bottlenecks and capacity
 
-Throughput is limited by the slowest step (the constraint). Improving any other step does not increase output. Find the constraint (often one setter, one caster, or the founder's approvals), keep it fed and protected, and add capacity there first.
+An operational bottleneck is the step that limits how much work the whole operation can finish: throughput is limited by the slowest step (the constraint). Improving any other step does not increase output. Find the constraint (often one setter, one caster, or the founder's approvals), keep it fed and protected, and add capacity there first.
 
 ## Cycle time and lead time
 

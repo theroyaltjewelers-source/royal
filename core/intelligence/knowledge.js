@@ -28,7 +28,7 @@ export const NAMESPACES = Object.freeze({
 });
 export const HOUSE_NAMESPACES = ["company", "policies", "agents", "skills", "real_cases"];
 
-const STOP = new Set("a an and are as at be but by can do does for from has have how i in is it its me my of on or our so that the their them then there these this to us was we what when where which who why will with you your about into than too very just also any each only own same other such no nor not should would could think tell explain".split(" "));
+const STOP = new Set("a an and are as at be but by can do does for from has have how i in is it its me my of on or our so that the their them then there these this to us was we what when where which who why will with you your about into than too very just also any each only own same other such no nor not should would could think tell explain make makes made mean means meaning define definition happens".split(" "));
 function stem(w) {
   return w.replace(/'s$/, "").replace(/(ies)$/, "y").replace(/(sses)$/, "ss").replace(/([^s])s$/, "$1").replace(/(ing|ed)$/, "").replace(/(ment|ness)$/, "");
 }

@@ -5,6 +5,7 @@
    ID in the text, names in the text, then what this conversation was last
    about.  Names are never identifiers; two clients can share one. */
 
+const ATTRIBUTE_FOLLOW_UP = /^\s*(and\s+)?(what'?s|what is|whats|how much is|when is|where is)\s+(the|its)\s+(balance|stage|status|due date|deadline|target date|total|value|deposit|price|next step)\s*[?.!]*\s*$/i;
 const PRONOUN = /\b(it|this|that|he|him|his|she|her|they|them|their|the same|the client)\b(\s+(one|project|piece|ring|pendant|chain|order|commission|client))?/i;
 const ID = /\bPRJ-\d{4}-\d{5}\b/i;
 const STOP = new Set(["the", "and", "for", "with", "what", "why", "who", "how", "status", "project",
@@ -57,7 +58,9 @@ export function resolveEntity(text, { projects = [], selected = null, recent = n
     }
   }
 
-  if (recent && PRONOUN.test(text || "")) {
+  /* "What's the balance?" right after "Pull up Marcus": a short question
+     about an attribute of the record under discussion is about that record. */
+  if (recent && (PRONOUN.test(text || "") || ATTRIBUTE_FOLLOW_UP.test(text || ""))) {
     const p = projects.find((x) => x.id === recent.id);
     if (p) return { status: "RESOLVED", via: "conversation", strong: true, entity: p };
   }

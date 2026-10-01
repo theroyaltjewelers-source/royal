@@ -339,3 +339,24 @@ test("sign-in rate limit: a forged X-Forwarded-For doesn't reset it, and guessin
   for (let i = 0; i < 30; i++) await many.login("wrong", "addr" + i);
   assert.equal((await many.login("wrong", "fresh-address")).status, 429, "30 wrong from anywhere pauses sign-in");
 });
+
+/* ----------------------------------------------------- acceptance gaps --- */
+
+import { KnowledgeEngine } from "../core/intelligence/knowledge.js";
+
+test("“What's the balance?” right after “Pull up Marcus” is Marcus's balance, not the textbook meaning of A/R", async () => {
+  const k = new KnowledgeEngine(); await k.ingestDir(join(ROOT, "docs"));
+  const r = createRoyal({ store: new MemoryStore(), knowledge: k, clock: () => NOW });
+  await r.ingestCalculator(house());
+  await r.handle({ content: "Pull up Marcus.", conversation_id: "c1" });
+  const a = await r.handle({ content: "What's the balance?", conversation_id: "c1" });
+  assert.equal(a.skill, "project_money"); assert.match(a.summary, /Marcus Hill owes \$13,000/);
+  const fresh = await r.handle({ content: "What's the balance?", conversation_id: "c2" });
+  assert.notEqual(fresh.skill, "project_money", "with nothing under discussion it is not about Marcus");
+});
+
+test("“What makes an operational bottleneck?” finds the COO reference (question words like “makes” no longer sink it)", async () => {
+  const k = new KnowledgeEngine(); await k.ingestDir(join(ROOT, "docs"));
+  assert.equal(k.search("What makes an operational bottleneck?", { namespaces: ["fabric"] })[0].path, "knowledge/coo.md");
+  assert.equal(k.search("What does idempotency mean?", { namespaces: ["fabric"] })[0].path, "knowledge/cto.md");
+});

@@ -45,7 +45,7 @@ There are two routing paths.
 
 **Capability routing.** `routeAgents(intent, text, { registry, bots, flags })` in `core/intelligence/agents.js` decides from data, not per-request branches:
 
-(a) If the intent names an agent (`intent.entities.agent`), that agent is returned with reason "named by Tahir".
+(a) If the intent carries an agent (`intent.entities.agent`), that agent is returned. Its `provenance` is `EXPLICIT_USER_SELECTION` (reason "named by Tahir") only when the agent's name appears in what Tahir said; an agent a rule or the model filled in is `CAPABILITY_ROUTE` (reason "chosen for the request"). The provenance values are `ROUTE_PROVENANCE` in `core/enums.js`.
 
 (b) Otherwise the intent maps to a capability through the `NEED` table (`outreach_draft` to `outreach`, `prospecting` to `prospecting`; research, knowledge, calculation and House state map to `null`, meaning ROYAL answers itself).
 
@@ -53,7 +53,7 @@ There are two routing paths.
 
 (d) The registry is filtered for specialists holding that capability, at most two, and each is given an adapter by `adapterFor`.
 
-**Where it runs.** `doOutreach` in `core/intelligence/index.js` picks its writer with `routeAgents({ ...intent, intent: "outreach_draft" }, text, { registry, flags })`: the agent Tahir named, or else the first specialist with the `outreach` capability (ACE, the only one that holds it). If no route comes back it falls back to ACE. If the chosen agent is not ACTIVE, ROYAL says it isn't connected and that ACE can write it. The rules interpreter fills `entities.agent` with `ace` when no agent is named (`INTENT_ENGINE.md`, section 3 (e)), so for rule-classified outreach the route is recorded as "named by Tahir" even when Tahir named no one; the capability path is taken when the model interpreter leaves the agent null.
+**Where it runs.** `doOutreach` in `core/intelligence/index.js` picks its writer with `routeAgents({ ...intent, intent: "outreach_draft" }, text, { registry, flags })`: the agent Tahir named, or else the first specialist with the `outreach` capability (ACE, the only one that holds it). If no route comes back it falls back to ACE. If the chosen agent is not ACTIVE, ROYAL says it isn't connected and that ACE can write it. When the rules interpreter fills `entities.agent` without Tahir naming one, the route is recorded as `CAPABILITY_ROUTE`, never as his choice (tested: "routing provenance", `tests/phase1.test.js`).
 
 Grok Bot delegation is triggered separately, in `handle()`, by the House `delegate_draft` skill naming an agent that is not ACTIVE (section 5). `routeAgents` is also exposed as `intelligence.routeAgents`. It has no test of its own; the outreach flows in TESTS A to E exercise it through `doOutreach`.
 
@@ -61,21 +61,21 @@ Grok Bot delegation is triggered separately, in `handle()`, by the House `delega
 
 `adapterFor` in `core/intelligence/agents.js`:
 
-(a) An ACTIVE agent uses the `internal` adapter: ROYAL's own specialists in `realms/business/royal-t/specialists.js` (`ace, grace, ledger, forge`).
+(a) An ACTIVE agent uses the `native` adapter: ROYAL's own specialists in `realms/business/royal-t/specialists.js` (`ace, grace, ledger, forge`).
 
-(b) A non-active agent uses `grokbot` only when `advanced_agent_orchestration` is on and the bridge lists a bot with the same id whose status is CONNECTED.
+(b) A non-active agent uses `grokbot` only when `advanced_agent_orchestration` is on and the bridge lists a bot with the same id whose `can_receive_tasks` is true, which needs a verified round trip (`CONNECTED_VERIFIED`, `ROYAL_GROK_BOT_CONNECTIVITY.md`). A bot that is only configured is not given routed work.
 
-(c) Otherwise it is unavailable, with a plain reason: the flag is off, the bot's status, or "not connected yet".
+(c) Otherwise it is unavailable, with a plain reason: the flag is off, the bot's connection state, or "not connected yet".
 
 ## 5. GrokBotAdapter
 
 `GrokBotAdapter` wraps the existing bridge (`core/grokbot/bridge.js`, documented in `docs/grokbot-bridge.md`).
 
-**Through the gate.** `doBotDelegation` in `core/intelligence/index.js` first checks the bot's status with `bots.status(agentId)` and stops unless it is CONNECTED. It then calls `gate.request({ agentId: "royal", tool: "delegate_to_bot", domain: "world", args: { agent, objective, handoff, conversation_id } })`, so the delegation is permission-checked by `PermissionService.check` (`delegate_to_bot` is DRAFT class, held by ROYAL through `*draft`) and audited as `TOOL_CALLED` or `TOOL_FAILED`. The gate's tool implementation (`toolImpls.delegate_to_bot`) calls the adapter. A refusal is reported ("I can't hand that to X") and nothing is sent. The test "review: bot delegation goes through the permission gate and is audited" checks the source of `doBotDelegation` for the gate call and for the absence of a direct `bots.delegate(` call; the behaviour itself is exercised by "Grok Bot delegation happens only when switched on".
+**Through the gate.** `doBotDelegation` in `core/intelligence/index.js` first checks the bot with `bots.status(agentId)` and stops unless `can_send` is true (configured and switched on), and also stops when its connection is AUTH_FAILED or FAILED. An explicit delegation may go to a CONFIGURED_UNVERIFIED bot: answering it is how the bot becomes verified. It then calls `gate.request({ agentId: "royal", tool: "delegate_to_bot", domain: "world", args: { agent, objective, handoff, conversation_id } })`, so the delegation is permission-checked by `PermissionService.check` (`delegate_to_bot` is DRAFT class, held by ROYAL through `*draft`) and audited as `TOOL_CALLED` or `TOOL_FAILED`. The gate's tool implementation (`toolImpls.delegate_to_bot`) calls the adapter. A refusal is reported ("I can't hand that to X") and nothing is sent. The test "review: bot delegation goes through the permission gate and is audited" checks the source of `doBotDelegation` for the gate call and for the absence of a direct `bots.delegate(` call; the behaviour itself is exercised by "Grok Bot delegation happens only when switched on".
 
 **What is real.** `delegate()` creates an AgentTask, then calls `bridge.sendMessage(agent, { content, skill: "royal_task", conversation_id: task.id })`, which POSTs to that bot's webhook (`GROKBOT_<ID>_WEBHOOK_URL` with `GROKBOT_<ID>_WEBHOOK_KEY`). The message says "Do not contact anyone or take any action; ROYAL and Tahir decide actions" and carries the structured handoff as data. The bot answers later by posting events with its own token; those events are records only (tested in `tests/grokbot.test.js`, "bot events are records only").
 
-**What the statuses mean.** `status(botId)` returns NOT_CONNECTED when there is no bridge or the bot is not in the realm. The bridge's own CONNECTED (`core/grokbot/bots.js`) means a webhook URL is configured and the bot is enabled; it does not mean the bot has answered or is reachable. `intelligence.status().grok_bots` is NOT_CONNECTED with no bridge, DISABLED when the bridge's master switch is off (`bridge.enabled()` is false, which is the case unless `GROKBOT_ENABLED` is `true`), and CONNECTED otherwise. The gateway's `grokbots` adapter and the tool catalogue do not consult `bridge.enabled()` and still read CONNECTED whenever a bridge exists (`MCP_INTEGRATION_GATEWAY.md`, `TOOL_REGISTRY.md`).
+**What the states mean.** `status(botId)` returns `{ connection, can_send, can_receive_tasks, last_verified_at, ... }`, with `connection: NOT_CONFIGURED` when there is no bridge or the bot is not in the realm. The registry's `config_state` (`NOT_CONFIGURED`, `DISABLED`, `CONFIGURED`) says only what may be attempted; the one connection state is `connection_state` (`core/grokbot/bots.js#connectionOf`). There is no `status: CONNECTED` any more. `intelligence.status().grok_bots` is NOT_CONNECTED with no bridge, DISABLED when the bridge's master switch is off (`bridge.enabled()` is false, which is the case unless `GROKBOT_ENABLED` is `true`), and CONNECTED otherwise. The gateway's `grokbots` adapter and the tool catalogue do not consult `bridge.enabled()` and still read CONNECTED whenever a bridge exists (`MCP_INTEGRATION_GATEWAY.md`, `TOOL_REGISTRY.md`).
 
 ## 6. AgentTasks
 
@@ -83,19 +83,25 @@ Grok Bot delegation is triggered separately, in `handle()`, by the House `delega
 
 | Status | Set by |
 |---|---|
-| ASSIGNED | `create()`; also `refresh()` when the bridge request is `requested` |
-| IN_PROGRESS | `delegate()` on a delivered webhook; `refresh()` on `delivered` or `in_progress` |
-| WAITING | NOT IMPLEMENTED: nothing sets it |
-| REPORTED_COMPLETE | `refresh()` when the bridge request is `completed` |
-| FAILED | `delegate()` when the webhook fails; `refresh()` on `failed` |
-| CANCELLED | `cancelOpen(conversation_id)`, called by "stop" and the other cancellations (`APPROVAL_MODEL.md`, section 4) |
-| VERIFIED_COMPLETE | NOT IMPLEMENTED: nothing sets it |
+| ASSIGNED | `create()`; also `refresh()` when the bridge request is `requested`; first history entry of every native run |
+| IN_PROGRESS | `delegate()` on a delivered webhook; `refresh()` on `delivered` or `in_progress`; a native run while it runs |
+| WAITING | `refresh()` when the bot posted status `waiting` or `blocked` (the bridge request becomes `waiting`, migration 003) |
+| REPORTED_COMPLETE | `refresh()` when the bridge request is `completed`: the bot said so, nothing checked it |
+| VERIFIED_COMPLETE | `recordNative()`: a native run I executed on the calculator's data and whose result validated (`verification_state: VERIFIED_INTERNAL`) |
+| PARTIAL | `recordNative()` when the run returned PARTIAL |
+| TIMED_OUT | `recordNative()` when the run passed its deadline (`fail_reason: AGENT_TIMEOUT`) |
+| FAILED | `delegate()` when the webhook fails; `refresh()` on `failed`; `recordNative()` on an error, invalid result or no runtime |
+| CANCELLED | `cancelOpen(conversation_id)`, called by "stop the tasks" and the other explicit cancellations, with `cancel_reason` |
+
+A test fails if any status in `TASK_STATUS` is never set by code ("every task status in the enum is reachable by code").
 
 **Overdue.** A task past its deadline keeps its status and gets `overdue: true` from `refresh()`, as long as it is not REPORTED_COMPLETE, FAILED or CANCELLED. The two facts are kept apart: an overdue task is still, for example, IN_PROGRESS. Overdue is not tested.
 
-`refresh()` only applies to `grokbot` tasks and reads `bridge.getRequest`, so `overdue` is only ever set on bot tasks. Cancelling a task changes ROYAL's record only; nothing is sent to the bot. Internal specialists do not create AgentTasks; their work is recorded as delegation entries on the result.
+`refresh()` only applies to `grokbot` tasks and reads `bridge.getRequest`, so `overdue` is only ever set on bot tasks. Cancelling a task changes ROYAL's record only; nothing is sent to the bot.
 
-`GET /v1/agents/tasks` (`server/handler.js`) returns `tasks.list({})`, refreshed from the bridge; it is called through the handler in `tests/server.test.js` (owner only, no key in the body). `GET /v1/agents` returns registry metadata plus the last audit entry per agent; its `current_task` is always `null`. The delegation test ("Grok Bot delegation happens only when switched on", `tests/intelligence.test.js`) checks the task is IN_PROGRESS with adapter `grokbot`.
+**Native runs are tasks too.** Every native specialist run in `consult()` (`core/royal.js`) is written as one AgentTask with `adapter: "native"`, in one write after the run, alongside its agent activity ledger entry. To keep the store bounded the native records are a ring of `NATIVE_RING` (20) per agent, keyed by the run's number in the day's ledger; the ledger keeps the counts. Runs in flight are held in process (`running` in `core/royal.js`) so "what is GRACE doing" is answered while she works.
+
+`GET /v1/agents/tasks` (`server/handler.js`) returns `tasks.list({})`, refreshed from the bridge. `GET /v1/agents` returns registry metadata, the last audit entry per agent, and from `royal.currentWork()`: `current_task` (a native run in flight, else the newest open delegated task, else `null`), `active_count` and `last_task` (tested: "/v1/agents reports current work from records"). The delegation test ("Grok Bot delegation happens only when switched on", `tests/intelligence.test.js`) checks the task is IN_PROGRESS with adapter `grokbot`.
 
 ## 7. The Structured Result Contract
 
