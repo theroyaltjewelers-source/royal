@@ -201,7 +201,7 @@ test("postgres: migrations apply once, and a second start changes nothing", { sk
   const b = await openPg({ keep: true });
   try {
     const names = (await b.pool.query("SELECT name FROM royal_migrations ORDER BY name")).rows.map((r) => r.name);
-    assert.deepEqual(names, ["001_grokbot.sql", "002_royal_store.sql"]);
+    assert.deepEqual(names, ["001_grokbot.sql", "002_royal_store.sql", "003_bot_verification.sql"]);
     assert.deepEqual((await b.store.get("tasks", "t1")).data, { v: 1 });
   } finally { await a.close(); await b.close(); }
 });

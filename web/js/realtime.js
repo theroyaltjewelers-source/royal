@@ -87,16 +87,21 @@ export class RealtimeVoice {
       case "input_audio_buffer.speech_stopped": this.heardAt = performance.now(); break;
       case "conversation.item.input_audio_transcription.completed": if (e.transcript) this.onHeard && this.onHeard(e.transcript, true); break;
       case "conversation.item.input_audio_transcription.delta": if (e.delta) this.onHeard && this.onHeard(e.delta, false); break;
-      case "response.created": this.responding = true; this.said = ""; if (this.pb) this.pb.begin(this.heardAt); this.heardAt = null; break;
-      case "response.output_audio.delta": if (e.delta) this._play(fromPcm16(bytesFromB64(e.delta))); break;
-      case "response.output_audio_transcript.delta": this.said += e.delta || ""; this.onSaid && this.onSaid(this.said); break;
-      case "response.done": this.responding = false; if (this.pb) this.pb.end(); this._state("live"); break;
+      case "response.created": this.responding = true; this.responseId = (e.response && e.response.id) || null; this.said = ""; if (this.pb) this.pb.begin(this.heardAt); this.heardAt = null; break;
+      /* Audio from a reply that was interrupted can still be in flight: it
+         is dropped, never queued, so nothing old plays after a barge-in. */
+      case "response.output_audio.delta": if (e.delta && this._current(e)) this._play(fromPcm16(bytesFromB64(e.delta))); else if (e.delta) this.dropped = (this.dropped || 0) + 1; break;
+      case "response.output_audio_transcript.delta": if (this._current(e)) { this.said += e.delta || ""; this.onSaid && this.onSaid(this.said); } break;
+      case "response.done": if (!e.response || !e.response.id || e.response.id === this.responseId) { this.responding = false; if (this.pb) this.pb.end(); this._state("live"); } break;
       case "response.function_call_arguments.done": await this._tool(e); break;
       case "error": this.onError && this.onError((e.error && e.error.message) || "The voice service reported an error."); break;
     }
   }
 
+  _current(e) { return this.responding && (!e.response_id || !this.responseId || e.response_id === this.responseId); }
+
   async _tool(e) {
+    const turn = this.turn || 0;
     let args = {}; try { args = JSON.parse(e.arguments || "{}"); } catch (_) { args = {}; }
     let output;
     if (e.name !== "ask_royal" || !args.request) output = { say: "I couldn't use that tool." };
@@ -116,6 +121,9 @@ export class RealtimeVoice {
     }
     if (!this.ws || this.ws.readyState !== 1) return;
     this.ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: e.call_id, output: JSON.stringify(output) } }));
+    /* Tahir spoke again while I was checking: the answer is on screen and in
+       the conversation, but I don't start speaking it over his new turn. */
+    if ((this.turn || 0) !== turn) return;
     this.ws.send(JSON.stringify({ type: "response.create" }));
   }
 
@@ -127,6 +135,7 @@ export class RealtimeVoice {
 
   /* Barge-in: silence now, cancel what the voice was saying. */
   interrupt() {
+    this.turn = (this.turn || 0) + 1;
     if (this.pb) this.pb.stop();
     if (this.responding && this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ type: "response.cancel" }));
     this.responding = false;

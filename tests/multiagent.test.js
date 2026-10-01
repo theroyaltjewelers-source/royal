@@ -36,9 +36,9 @@ function fakeBridge() {
   return {
     enabled: () => true,
     listBots: async () => ({ body: { ok: true, bots: [
-      { id: "ace", name: "Ace", status: "CONNECTED", connection: "CONNECTED_VERIFIED", last_seen: ISO },
-      { id: "grace", name: "Grace", status: "CONNECTED", connection: "CONFIGURED_UNVERIFIED" },
-      { id: "house", name: "House", status: "CONNECTED", connection: "FAILED", last_error: "WEBHOOK_HTTP_500" }] } }),
+      { id: "ace", name: "Ace", config_state: "CONFIGURED", connection: "CONNECTED_VERIFIED", can_send: true, can_receive_tasks: true, last_seen: ISO, last_verified_at: ISO },
+      { id: "grace", name: "Grace", config_state: "CONFIGURED", connection: "CONFIGURED_UNVERIFIED", can_send: true, can_receive_tasks: false },
+      { id: "house", name: "House", config_state: "CONFIGURED", connection: "FAILED", can_send: true, can_receive_tasks: false, last_error: "WEBHOOK_HTTP_500" }] } }),
     getFeed: async (id) => {
       if (id === "grace") throw new Error("feed unavailable");
       if (id === "ace") return { body: { ok: true, events: [

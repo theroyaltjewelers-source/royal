@@ -16,6 +16,7 @@ export const INTENTS = [
   { skill: "state_of_house",    re: /\b(state of the house|how('?s| is) the house|house (status|report)|give me the (overview|picture)|where do we stand)\b/i },
   { skill: "morning_briefing",  re: /\b(brief(ing)?|morning|get me ready|ready for (tomorrow|today|the day)|start (my|the) day|end of (the )?day)\b/i },
   { skill: "decisions_open",    re: /\b(approv(e|al|als)|decisions?|sign off|waiting on me to decide)\b/i },
+  { skill: "daily_digest",      re: /\b(what (all )?happened( today| so far)?\s*[?.!]*$|what happened today|today'?s (recap|digest|summary)|daily (digest|recap)|recap (of )?(today|the day)|how did today go)\b/i },
   { skill: "what_changed",      re: /\b(what('?s| has)? changed|what'?s new|what happened|any changes|since (yesterday|this morning|last time))\b/i },
   { skill: "what_needs_me",     re: /\b(what needs me|needs? (me|my attention)|what should i (do|focus|look at)|anything for me|triage|what do i need to)\b/i },
   { skill: "cash_analysis",     re: /\b(tight on cash|cash (flow|position|crunch|is tight|has been tight|been tight|situation)|(low|short|light) on cash|where('?s| is| did) (the|our|all the) (cash|money)( go(ne)?)?|why (is|are|has|have) (we|cash|money) (been )?(so )?(tight|short|low)|how('?s| is) (our )?cash)\b/i },
@@ -55,7 +56,7 @@ export function teamRoute(t) {
 }
 
 /* Words that turn a question into one about a particular record. */
-const ABOUT_ENTITY = /\b(status|where is|where'?s|why (hasn'?t|has not|isn'?t|is not|did|is)|what'?s (happening|going on) with|how is|update on|tell me about|show me)\b/i;
+const ABOUT_ENTITY = /\b(status|where is|where'?s|why (hasn'?t|has not|isn'?t|is not|did|is)|what'?s (happening|going on) with|what (happened|changed) (with|to|on)|how is|update on|tell me about|show me|stage|balance)\b/i;
 
 export function route(text, { entityResolved = false, entityStrong = entityResolved } = {}) {
   const t = String(text || "").trim();

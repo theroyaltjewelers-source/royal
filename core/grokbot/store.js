@@ -84,6 +84,8 @@ export { loadPg, poolConfig, migrate } from "../db.js";
 const EV = "id::text AS id, bot_id, realm, request_id::text AS request_id, type, content_markdown, status, author, created_at";
 const evRow = (r) => (r ? { ...r, created_at: iso(r.created_at) } : null);
 const reqRow = (r) => (r ? { ...r, created_at: iso(r.created_at), updated_at: iso(r.updated_at) } : null);
+/* Per-bot connection evidence (migration 003 adds all but the first three). */
+const STATE_COLS = ["last_seen", "last_message_at", "last_error", "last_verified_at", "last_roundtrip_ms", "last_failure_at", "pending_verify_at", "recent_outcomes"];
 const REQ_PATCH = ["status", "last_error", "conversation_id", "skill"];
 
 export class PgBridgeStore {
@@ -128,15 +130,17 @@ export class PgBridgeStore {
     return rows.map(evRow);
   }
   async touchBot(botId, patch) {
-    const cols = ["last_seen", "last_message_at", "last_error"].filter((k) => k in patch);
+    const cols = STATE_COLS.filter((k) => k in patch);
     if (!cols.length) return;
     await this.q("INSERT INTO grokbot_bot_state (bot_id, " + cols.join(", ") + ") VALUES ($1, " + cols.map((_, i) => "$" + (i + 2)).join(", ") + ") " +
       "ON CONFLICT (bot_id) DO UPDATE SET " + cols.map((k) => k + " = EXCLUDED." + k).join(", "), [botId, ...cols.map((k) => patch[k])]);
   }
   async getBotState(botId) {
-    const { rows } = await this.q("SELECT last_seen, last_message_at, last_error FROM grokbot_bot_state WHERE bot_id = $1", [botId]);
+    const { rows } = await this.q("SELECT " + STATE_COLS.join(", ") + " FROM grokbot_bot_state WHERE bot_id = $1", [botId]);
     const r = rows[0] || {};
-    return { last_seen: iso(r.last_seen), last_message_at: iso(r.last_message_at), last_error: r.last_error || null };
+    return { last_seen: iso(r.last_seen), last_message_at: iso(r.last_message_at), last_error: r.last_error || null,
+      last_verified_at: iso(r.last_verified_at), last_roundtrip_ms: r.last_roundtrip_ms == null ? null : Number(r.last_roundtrip_ms),
+      last_failure_at: iso(r.last_failure_at), pending_verify_at: iso(r.pending_verify_at), recent_outcomes: r.recent_outcomes || "" };
   }
   async insertToken({ bot_id, prefix, token_hash }) {
     const c = await this.pool.connect();

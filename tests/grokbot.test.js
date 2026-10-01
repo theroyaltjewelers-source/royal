@@ -124,7 +124,7 @@ test("GET /v1/bots lists every bot with status and never a URL, key or header", 
   const r = await I.call("GET", "/v1/bots");
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.bots.map((b) => b.id).sort(), [...BOTS].sort());
-  assert.ok(r.json.bots.every((b) => b.status === "CONNECTED"));
+  assert.ok(r.json.bots.every((b) => b.config_state === "CONFIGURED" && b.can_send === true && b.can_receive_tasks === false && !("status" in b)), "configured is not connected, and there is no second status");
   for (const leak of ["whk-", "SECRET-KEY", W.base, "X-Ace-Key", "webhook_url", "\"url\"", "\"key\""]) assert.ok(!r.text.includes(leak), "leaked " + leak);
 });
 
@@ -352,19 +352,19 @@ test("bot events are records only: they create no decisions and call no tools", 
 test("the bridge is off unless GROKBOT_ENABLED is true, and says so", async () => {
   const b = createBridge({ env: { ...botEnv("https://example.invalid"), GROKBOT_ENABLED: "false" }, logger: quiet });
   const l = await b.listBots({});
-  assert.ok(l.body.bots.every((x) => x.status === "DISABLED"));
+  assert.ok(l.body.bots.every((x) => x.config_state === "DISABLED" && x.connection === "DISABLED" && !x.can_send));
   assert.equal((await b.sendMessage("ace", { content: "x" })).status, 409);
   const none = createBridge({ env: {}, logger: quiet });
-  assert.ok((await none.listBots({})).body.bots.every((x) => x.status === "NOT_CONNECTED"));
+  assert.ok((await none.listBots({})).body.bots.every((x) => x.config_state === "NOT_CONFIGURED" && x.connection === "NOT_CONFIGURED" && !x.can_send));
   const http = createBridge({ env: { GROKBOT_ENABLED: "true", GROKBOT_ACE_WEBHOOK_URL: "http://example.com/x", GROKBOT_ACE_WEBHOOK_KEY: "k" }, logger: quiet });
   const ace = (await http.listBots({})).body.bots.find((x) => x.id === "ace");
-  assert.equal(ace.status, "NOT_CONNECTED"); assert.equal(ace.config_error, "WEBHOOK_URL_MUST_BE_HTTPS");
+  assert.equal(ace.config_state, "NOT_CONFIGURED"); assert.equal(ace.config_error, "WEBHOOK_URL_MUST_BE_HTTPS");
 });
 
 test("legacy single-bot env still configures skill_library", async () => {
   const b = createBridge({ env: { GROKBOT_ENABLED: "true", GROKBOT_WEBHOOK_URL: "https://example.com/hook", GROKBOT_WEBHOOK_KEY: "k" }, logger: quiet });
   const l = (await b.listBots({ realm: "BUSINESS" })).body.bots;
-  assert.equal(l.find((x) => x.id === "skill_library").status, "CONNECTED");
+  assert.equal(l.find((x) => x.id === "skill_library").config_state, "CONFIGURED");
   assert.deepEqual(l.find((x) => x.id === "skill_library").realms, ["BUSINESS", "PERSONAL"]);
   assert.deepEqual(l.find((x) => x.id === "ace").realms, ["BUSINESS"]);
 });
@@ -457,7 +457,7 @@ test("Postgres: migrations apply once and the database enforces same-bot request
   const b2 = await bridgeFromEnv(pgEnv("https://example.com"), { migrationsDir: MIGRATIONS, logger: quiet });   /* second start: nothing to apply */
   const pg = (await import("pg")).default; const pool = new pg.Pool({ connectionString: DB });
   try {
-    assert.deepEqual((await pool.query("SELECT name FROM royal_migrations ORDER BY name")).rows.map((r) => r.name), ["001_grokbot.sql", "002_royal_store.sql"]);
+    assert.deepEqual((await pool.query("SELECT name FROM royal_migrations ORDER BY name")).rows.map((r) => r.name), ["001_grokbot.sql", "002_royal_store.sql", "003_bot_verification.sql"]);
     await pool.query("INSERT INTO grokbot_requests (id, bot_id, realm, status) VALUES ('11111111-1111-4111-8111-111111111111', 'grace', 'BUSINESS', 'requested')");
     await assert.rejects(pool.query("INSERT INTO grokbot_events (bot_id, realm, request_id, type, content_markdown) VALUES ('ace', 'BUSINESS', '11111111-1111-4111-8111-111111111111', 'result', 'x')"), /grokbot_events_request_same_bot/);
     await pool.query("INSERT INTO grokbot_events (bot_id, realm, request_id, type, content_markdown) VALUES ('grace', 'BUSINESS', '11111111-1111-4111-8111-111111111111', 'result', 'x')");
@@ -524,10 +524,15 @@ test("a bot is CONNECTED_VERIFIED only after a real round trip, never for config
     assert.equal(v.status, 200, v.text);
     const sent = w.calls.find((c) => c.bot === "grace");
     assert.equal(sent.body.skill, "connection_check"); assert.equal(sent.body.request_id, v.json.request_id);
-    assert.equal(await conn("grace"), "CONFIGURED_UNVERIFIED", "delivered, but the bot hasn't answered");
+    assert.equal(await conn("grace"), "VERIFYING", "delivered, but the bot hasn't answered");
     const tok = await tokenFor(A, "grace");
+    /* a post with no request_id proves the bot can reach me, not that it got anything */
+    await A.call("POST", "/v1/bots/grace/events", { type: "message", content_markdown: "hello" }, tok);
+    assert.equal(await conn("grace"), "VERIFYING", "an uncorrelated post does not verify");
     await A.call("POST", "/v1/bots/grace/events", { request_id: v.json.request_id, type: "result", content_markdown: "ready" }, tok);
     assert.equal(await conn("grace"), "CONNECTED_VERIFIED");
+    const g = (await A.call("GET", "/v1/bots")).json.bots.find((b) => b.id === "grace");
+    assert.ok(g.last_verified_at && g.last_roundtrip_ms >= 0 && g.can_receive_tasks === true && g.recent_success_rate === 1, JSON.stringify(g));
     assert.equal((await A.call("GET", "/v1/bots/grace/requests/" + v.json.request_id)).json.request.status, "completed", "the answer is attributed to the check");
     /* the webhook starts failing: no longer verified */
     w.fail.set("grace", 500);
@@ -548,10 +553,13 @@ test("bot health: a refused key is AUTH_FAILED, silence after delivery is UNRESP
   const t = (m) => new Date(Date.parse("2026-10-01T12:00:00Z") + m * 60000).toISOString();
   const now = Date.parse(t(0));
   assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_HTTP_401" }, now), "AUTH_FAILED");
-  assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_HTTP_403", last_seen: t(-60) }, now), "AUTH_FAILED");
-  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_seen: t(-90) }, now), "UNRESPONSIVE", "asked 20 minutes ago, last heard before that");
-  assert.equal(connectionOf(bot, { last_message_at: t(-5), last_seen: t(-90) }, now), "CONNECTED_VERIFIED", "proven before, and the new message is still within the window");
-  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_seen: t(-10) }, now), "CONNECTED_VERIFIED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_HTTP_403", last_verified_at: t(-60) }, now), "AUTH_FAILED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_verified_at: t(-90) }, now), "UNRESPONSIVE", "asked 20 minutes ago, last verified before that");
+  assert.equal(connectionOf(bot, { last_message_at: t(-5), last_verified_at: t(-90) }, now), "CONNECTED_VERIFIED", "proven before, and the new message is still within the window");
+  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_verified_at: t(-10) }, now), "CONNECTED_VERIFIED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_seen: t(-10) }, now), "UNRESPONSIVE", "heard from, but never a correlated answer: not verified");
+  assert.equal(connectionOf(bot, { last_message_at: t(-1), pending_verify_at: t(-1) }, now), "VERIFYING");
+  assert.equal(connectionOf(bot, { last_message_at: t(-3), pending_verify_at: t(-3) }, now), "UNRESPONSIVE", "the check went unanswered");
   assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_TIMEOUT" }, now), "FAILED");
   assert.equal(connectionOf({ configured: false, enabled: true }, {}, now), "NOT_CONFIGURED");
 });

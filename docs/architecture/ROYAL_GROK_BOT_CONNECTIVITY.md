@@ -39,3 +39,28 @@ In the menu, open Bots, choose the bot, and press "Check connection". ROYAL send
 ## 6. Update, 1 October 2026
 
 Two more states: AUTH_FAILED (the bot's webhook refused ROYAL's key) and UNRESPONSIVE (delivered more than 15 minutes ago, no word back). Full model: `ROYAL_BOT_HEALTH_MODEL.md`. The daily activity review reads each bot's feed on its own, so one unreadable feed is named and the others are still reported. Round trips with the real bots have still not been run from this environment: there are no bot webhooks here.
+
+## 7. Phase 1 correction, 1 October 2026
+
+(a) **One state, not two.** The registry used to carry `status: CONNECTED` for any bot with a webhook address and key, beside the real `connection`. Two readers trusted the old field: routed delegation (`adapterFor` in `core/intelligence/agents.js`) and the Bots panel's Send button (`bot.status === "CONNECTED"` in `web/js/bots.js`). The old field is gone. Every bot in `GET /v1/bots` now carries:
+
+| Field | Meaning |
+|---|---|
+| `config_state` | NOT_CONFIGURED, DISABLED or CONFIGURED: what may be attempted, never "connected" |
+| `connection_state` (and `connection`, the same value) | the one connection state, below |
+| `can_send` | ROYAL may deliver a message (configured and switched on) |
+| `can_receive_tasks` | ROYAL may route work to it: the latest word from it is a verified round trip |
+| `last_verified_at`, `last_roundtrip_ms` | the last verified round trip and how long it took |
+| `last_failure_at`, `recent_success_rate` | the last failed delivery, and the share of the last 20 deliveries that went through |
+
+The page reads `can_send` and `connection_state` and infers nothing (`canSendTo` in `web/js/bots.js`).
+
+(b) **What verifies.** A round trip is verified only when the bot posts, with its own token, an event carrying the `request_id` of a message ROYAL delivered to it, within 15 minutes. A post with no `request_id` proves the bot can reach ROYAL, not that it received anything, and no longer verifies. Before this change any post after any message counted.
+
+(c) **States.** NOT_CONFIGURED, DISABLED, CONFIGURED_UNVERIFIED, VERIFYING (a connection check was delivered, the answer is pending, for up to 2 minutes), CONNECTED_VERIFIED, DEGRADED, AUTH_FAILED, UNRESPONSIVE (including a check unanswered after 2 minutes) and FAILED.
+
+(d) **Storage.** Migration `003_bot_verification.sql` adds the evidence columns to `grokbot_bot_state`. It is additive, with a rollback in `003_bot_verification.down.sql`.
+
+(e) Section 5 (b) still holds for explicit delegation: Tahir may hand work to a configured, unverified bot, because answering it is what verifies it. Routed work goes only to a bot with `can_receive_tasks`.
+
+(f) Still not run: a round trip with Tahir's real bots. This environment cannot reach them or the production server. `npm run phase1:verify` with `ROYAL_URL` and `ROYAL_TOKEN` lists each bot's live state.

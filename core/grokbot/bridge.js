@@ -20,7 +20,7 @@
    fetch-standard Response. */
 
 import { randomUUID } from "node:crypto";
-import { loadBotRegistry, authHeaderFor, publicBotView, BOT_ID_RE, LEGACY_BOT_ID, REALMS } from "./bots.js";
+import { loadBotRegistry, authHeaderFor, publicBotView, BOT_ID_RE, LEGACY_BOT_ID, REALMS, UNRESPONSIVE_MS } from "./bots.js";
 import { MemoryBridgeStore } from "./store.js";
 import { LocalPubSub } from "./pubsub.js";
 import { mintToken, verifyBotToken } from "./tokens.js";
@@ -36,7 +36,7 @@ export const LIMITS = Object.freeze({
 });
 
 const BOT_EVENT_TYPES = ["progress", "result", "alert", "message"];
-const REQUEST_STATUSES = ["requested", "delivered", "in_progress", "completed", "failed"];
+const REQUEST_STATUSES = ["requested", "delivered", "in_progress", "waiting", "completed", "failed"];
 const EVENT_TO_REQUEST = { progress: "in_progress", result: "completed" };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONV_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -138,8 +138,8 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     if (content.length > L.MAX_MESSAGE_CHARS) return fail(413, "CONTENT_TOO_LONG", "At most " + L.MAX_MESSAGE_CHARS + " characters.");
     const [skill, sOk] = opt(body.skill, SKILL_RE); if (!sOk) return fail(400, "BAD_SKILL", "Skill must be letters, numbers, dots, dashes or underscores.");
     const [conv, cOk] = opt(body.conversation_id, CONV_RE); if (!cOk) return fail(400, "BAD_CONVERSATION_ID", "conversation_id is not valid.");
-    if (bot.status === "NOT_CONNECTED") return fail(409, "BOT_NOT_CONNECTED", bot.name + " has no webhook configured.", { bot_id: bot.id });
-    if (bot.status === "DISABLED") return fail(409, "BOT_DISABLED", bot.name + " is switched off.", { bot_id: bot.id });
+    if (bot.config === "NOT_CONFIGURED") return fail(409, "BOT_NOT_CONNECTED", bot.name + " has no webhook configured.", { bot_id: bot.id });
+    if (bot.config === "DISABLED") return fail(409, "BOT_DISABLED", bot.name + " is switched off.", { bot_id: bot.id });
     if (limited("out", bot.id, L.MESSAGES_PER_MINUTE)) return fail(429, "RATE_LIMITED", "Too many messages to " + bot.name + ". Wait a minute.", { bot_id: bot.id });
 
     const id = randomUUID(), conversation_id = conv || id, requested_by = String(requestedBy).slice(0, 64), sent_at = now();
@@ -149,7 +149,11 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     const error = await callWebhook(bot, payload);
     if (error) logger.warn && logger.warn('[grokbot] webhook for "' + bot.id + '" failed: ' + error);   /* never the URL or key */
     await store.updateRequest(bot.id, id, error ? { status: "failed", last_error: error } : { status: "delivered" });
-    await store.touchBot(bot.id, { last_message_at: sent_at, last_error: error });
+    const prev = await store.getBotState(bot.id);
+    const outcomes = (String(prev.recent_outcomes || "") + (error ? "0" : "1")).slice(-20);
+    await store.touchBot(bot.id, { last_message_at: sent_at, last_error: error, recent_outcomes: outcomes,
+      ...(error ? { last_failure_at: sent_at } : {}),
+      ...(!error && skill === "connection_check" ? { pending_verify_at: sent_at } : {}) });
     const evt = await record({ bot_id: bot.id, realm: r, request_id: id, type: "outbound", content_markdown: content, status: error ? "failed" : "delivered", author: requested_by });
     return error
       ? fail(502, error, bot.name + " could not be reached. The message was recorded but not delivered.", { bot_id: bot.id, request_id: id, event_id: evt.id, status: "failed" })
@@ -188,10 +192,18 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     if (!allows(bot, realm)) return fail(403, "REALM_FORBIDDEN", bot.name + " cannot post " + realm.toLowerCase() + " events.");
 
     if (req) {
-      const next = REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type];
+      /* "blocked" from a bot means the same as waiting on someone. */
+      const next = status === "blocked" ? "waiting" : REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type];
       if (next && req.status !== next) await store.updateRequest(bot.id, req.id, { status: next, last_error: next === "failed" ? "reported by bot" : null });
     }
-    await store.touchBot(bot.id, { last_seen: now() });
+    /* A correlated answer, with the bot's own token, to a message ROYAL
+       delivered, in time: that is a verified round trip. */
+    const at = now(), patch = { last_seen: at };
+    if (req && req.requested_by !== bot.id && ["result", "message", "progress"].indexOf(type) >= 0) {
+      const ms = Date.parse(at) - Date.parse(req.created_at);
+      if (ms >= 0 && ms <= UNRESPONSIVE_MS) Object.assign(patch, { last_verified_at: at, last_roundtrip_ms: ms, pending_verify_at: null });
+    }
+    await store.touchBot(bot.id, patch);
     const evt = await record({ bot_id: bot.id, realm, request_id: requestId, type, content_markdown, status, author: bot.id });
     return ok({ bot_id: bot.id, event_id: evt.id, request_id: requestId, realm }, 201);
   }

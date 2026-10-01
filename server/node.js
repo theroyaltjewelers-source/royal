@@ -16,10 +16,12 @@ import { intelligenceFromEnv } from "./intelligence-env.js";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon" };
+  ".svg": "image/svg+xml", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8" };
 
+/* iOS asks for these by name when ROYAL is added to the home screen. */
+const ALIAS = { "/": "/index.html", "/apple-touch-icon-precomposed.png": "/apple-touch-icon.png", "/favicon.ico": "/apple-touch-icon.png" };
 async function staticFiles(path) {
-  const rel = path === "/" ? "/index.html" : path;
+  const rel = ALIAS[path] || path;
   const file = normalize(join(WEB, rel));
   if (!file.startsWith(WEB + "/")) return null;
   try {
@@ -44,7 +46,11 @@ const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
   providerFactory: (e) => (e.XAI_API_KEY || e.ROYAL_GROK_MODEL ? new GrokProvider({ apiKey: e.XAI_API_KEY, model: e.ROYAL_GROK_MODEL, fastModel: e.ROYAL_GROK_FAST_MODEL,
     voiceModel: e.ROYAL_VOICE_MODEL || "grok-voice-latest", voice: e.ROYAL_VOICE || "ara", metrics: intel.metrics }) : new UnavailableProvider("XAI_API_KEY and ROYAL_GROK_MODEL are not set.")),
 });
-const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles });
+/* One JSON line per API request and per failed request (route folded, no
+   bodies, queries or tokens), so every 4xx and 5xx can be traced in the
+   Render log.  ROYAL_ACCESS_LOG=off silences it. */
+const log = env.ROYAL_ACCESS_LOG === "off" ? null : (l) => console.log("ROYAL_ACCESS " + JSON.stringify(l));
+const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles, log });
 
 const server = http.createServer(nodeAdapter(handler));
 /* requestTimeout bounds how long a request may take to arrive (a slow upload),

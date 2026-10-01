@@ -11,7 +11,8 @@
     "test": "node --test tests/*.test.js",
     "start": "node server/node.js",
     "migrate": "node server/migrate.js",
-    "bench": "node server/bench.js"
+    "bench": "node server/bench.js",
+    "phase1:verify": "node server/phase1-verify.js"
   },
   "dependencies": {
     "pg": "^8.23.0"

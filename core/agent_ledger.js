@@ -84,7 +84,9 @@ export class AgentActivityLedger {
     const out = await Promise.allSettled(agents.map(async (id) => {
       const meta = AGENTS.find((a) => a.id === id) || { id, name: id.toUpperCase(), domain: "" };
       const native = await this.day(id, day);
-      const delegated = allTasks === null ? null : allTasks.filter((t) => t.agent === id && dayOf(t.created_at, this.tz) === day);
+      /* Native runs are counted once, in agent_day; tasks here are the work
+         handed to a Grok Bot. */
+      const delegated = allTasks === null ? null : allTasks.filter((t) => t.agent === id && t.adapter !== "native" && dayOf(t.created_at, this.tz) === day);
       const bot = bots ? bots.find((b) => b.id === id) || null : null;
       let feed = null;
       if (bridge && bot) {
@@ -93,7 +95,7 @@ export class AgentActivityLedger {
           feed = ((f.body && f.body.events) || []).filter((e) => e.type !== "outbound" && dayOf(Date.parse(e.created_at), this.tz) === day);
         } catch (e) { feed = { error: String(e.message || e) }; }
       }
-      return { ...meta, native, delegated, bot: bot ? { connection: bot.connection || bot.status, last_seen: bot.last_seen, last_error: bot.last_error } : null, feed };
+      return { ...meta, native, delegated, bot: bot ? { connection: bot.connection, last_verified_at: bot.last_verified_at, last_seen: bot.last_seen, last_error: bot.last_error } : null, feed };
     }));
     return { day, agents: out.map((r, i) => (r.status === "fulfilled" ? r.value : { ...AGENTS.find((a) => a.id === agents[i]), error: String(r.reason && r.reason.message || r.reason) })) };
   }

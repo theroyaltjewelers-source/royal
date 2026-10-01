@@ -14,7 +14,34 @@ import { identityPrompt } from "../core/identity.js";
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
 
-export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
+/* Every route the API serves, with the methods it accepts.  A known path
+   asked with the wrong method is a 405 with an Allow header, never a 404,
+   so a stale caller is told exactly what changed. */
+const ROUTES = [
+  [/^\/v1\/health$/, "GET"], [/^\/v1\/login$/, "POST"], [/^\/v1\/login-methods$/, "GET"],
+  [/^\/v1\/(status|agents|boot|skills|domains|activity|developer\/log|developer\/metrics|intelligence\/status|tools|agents\/tasks|knowledge\/search|decisions|bots|feed\/stream)$/, "GET"],
+  [/^\/v1\/(provider\/test|voice\/session|voice\/speak|command|ingest\/calculator|integrations\/grokbot\/run|integrations\/grokbot\/result)$/, "POST"],
+  [/^\/v1\/decisions\/[A-Za-z0-9_]+\/resolve$/, "POST"], [/^\/v1\/integrations\/grokbot\/result\/[0-9a-fA-F-]{36}$/, "GET"],
+  [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/token$/, "POST, DELETE"], [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(message|verify|events)$/, "POST"],
+  [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(feed|stream|requests\/[0-9a-fA-F-]{36})$/, "GET"],
+];
+export function allowedMethods(path) { const r = ROUTES.find(([re]) => re.test(path)); return r ? r[1] : null; }
+
+/* The address a request came from, for rate limits.  The proxy in front
+   (Render) appends the address it saw to X-Forwarded-For, so the last entry
+   is the one a client cannot forge; the first is whatever the client sent. */
+export function clientAddress(req) {
+  const xs = String(req.headers.get("x-forwarded-for") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return xs.length ? xs[xs.length - 1] : "anon";
+}
+
+/* The path as it is logged: ids and tokens folded away, never the query. */
+export function routeOf(path) {
+  if (!path.startsWith("/v1/")) return path === "/" || /\.(js|css|html|png|ico|svg|txt|json)$/.test(path) ? "static" : "static:other";
+  return path.replace(/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}/g, ":uuid").replace(/^\/v1\/decisions\/[^/]+/, "/v1/decisions/:id").replace(/^\/v1\/bots\/[^/]+/, (m) => (m === "/v1/bots" ? m : "/v1/bots/:bot"));
+}
+
+export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 }, log = null }) {
   if (!royal) throw new Error("HANDLER_CONFIG: royal is required");
   if (!auth) throw new Error("HANDLER_CONFIG: auth is required");
   const hits = new Map();
@@ -119,22 +146,57 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     return fail(req, 405, "METHOD_NOT_ALLOWED", "That method is not supported here.");
   }
 
-  return async function handle(req) {
+  /* One line per request: method, folded route, status, duration, error
+     code and a request id the response also carries.  Never a body, a
+     query string, a token or a key.  Health checks and static files are
+     logged only when they fail. */
+  const started = Date.now();
+  async function handle(req) {
+    const t0 = Date.now(), rid = Math.random().toString(36).slice(2, 10);
+    const head = req.method === "HEAD";
+    let res;
+    try { res = await route(head ? new Request(req.url, { method: "GET", headers: req.headers, signal: req.signal }) : req); }
+    catch (e) { res = fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed."); }
+    const h = new Headers(res.headers); h.set("X-Request-Id", rid);
+    const out = new Response(head ? null : res.body, { status: res.status, headers: h });
+    if (log) {
+      const p = new URL(req.url).pathname.replace(/\/+$/, "") || "/", r = routeOf(p);
+      if (res.status >= 400 || (p.startsWith("/v1/") && p !== "/v1/health")) {
+        let code = null;
+        if (res.status >= 400 && /json/.test(res.headers.get("content-type") || "")) { try { code = (await res.clone().json()).error || null; } catch (_) {} }
+        try { log({ at: new Date().toISOString(), request_id: rid, method: req.method, route: r, status: res.status, ms: Date.now() - t0, error: code }); } catch (_) {}
+      }
+    }
+    return out;
+  }
+  handle.routeOf = routeOf;
+  return handle;
+
+  async function route(req) {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...SEC, ...cors(req) } });
 
     if (!path.startsWith("/v1/")) {
-      if (staticFiles && req.method === "GET") { const r = await staticFiles(path); if (r) return r; }
+      if (req.method !== "GET") return new Response(JSON.stringify({ ok: false, error: "METHOD_NOT_ALLOWED", message: "Only GET is served here." }),
+        { status: 405, headers: { "Content-Type": "application/json; charset=utf-8", Allow: "GET, HEAD", ...SEC } });
+      if (staticFiles) { const r = await staticFiles(path); if (r) return r; }
       return fail(req, 404, "NOT_FOUND", "No such route.");
     }
-    if (path === "/v1/health") return json(req, 200, { ok: true, service: "royal", version: VERSION });
+    /* Liveness: the server loop is answering.  It depends on no provider,
+       database or bot, so a slow dependency never restarts the service.
+       Depth lives behind sign-in (/v1/status, "diagnose yourself"). */
+    if (path === "/v1/health") return json(req, 200, { ok: true, service: "royal", version: VERSION, uptime_s: Math.round((Date.now() - started) / 1000) });
+    const allow = allowedMethods(path);
+    if (allow && allow.split(", ").indexOf(req.method) < 0)
+      return new Response(JSON.stringify({ ok: false, error: "METHOD_NOT_ALLOWED", message: path + " accepts " + allow + "." }),
+        { status: 405, headers: { "Content-Type": "application/json; charset=utf-8", Allow: allow + (allow.includes("GET") ? ", HEAD" : ""), ...SEC, ...cors(req) } });
 
     /* ROYAL's own sign-in: a passcode, no email. */
     if (path === "/v1/login" && req.method === "POST") {
       if (!passcode) return fail(req, 503, "PASSCODE_NOT_CONFIGURED", "ROYAL's passcode sign-in is not set up on the server.");
       let b; try { b = await body(req); } catch (e) { return fail(req, e.status || 400, e.code || "BAD_JSON", e.message); }
-      const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+      const who = clientAddress(req);
       const r = await passcode.login(String(b.passcode || ""), who);
       if (!r.ok) return fail(req, r.status, r.error, r.message);
       await royal.audit.record({ actor: "tahir", action: "SIGNED_IN", summary: "Signed in to ROYAL with the passcode.", executive: true });
@@ -156,7 +218,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check that token. Nothing was done."); }
       if (!principal) {
         /* Slow down guessing: invalid bot tokens are limited per address. */
-        const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+        const who = clientAddress(req);
         if (limited("badbot:" + who)) return fail(req, 429, "RATE_LIMITED", "Too many requests. Wait a minute.");
         return fail(req, 401, "AUTH_INVALID", "That token is not valid or has been revoked.");
       }
@@ -183,13 +245,16 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     try {
       if (req.method === "GET" && path === "/v1/status") return json(req, 200, { ok: true, ...(await royal.status()), user: { id: user.id } });
       if (req.method === "GET" && path === "/v1/agents") {
-        /* Registry metadata plus what the audit log actually shows each agent did last. */
+        /* Registry metadata, what the audit log shows each agent did last, and
+           its current work from records (native runs in flight, open
+           delegated tasks), never from asking the agent. */
         const log = await royal.audit.developerLog({ limit: 2000 });
+        const work = royal.currentWork ? await royal.currentWork() : {};
         const agents = royal.agents().map((a) => {
-          const last = log.find((e) => e.agent === a.id);
+          const last = log.find((e) => e.agent === a.id), w = work[a.id] || {};
           return { id: a.id, name: a.name, role: a.role, capabilities: a.capabilities || [], status: a.status, permission_profile: a.permission_profile,
             available_tools: a.allowed_tools, realms: a.realms, version: a.version, description: a.description,
-            last_activity: last ? { at: last.at, action: last.action } : null, current_task: null,
+            last_activity: last ? { at: last.at, action: last.action } : null, current_task: w.current_task || null, active_count: w.active_count || 0, last_task: w.last_task || null,
             health: a.status !== "ACTIVE" ? "NOT_CONNECTED" : (last && /FAILED|DENIED/.test(last.action) ? "DEGRADED" : "OK") };
         });
         return json(req, 200, { ok: true, agents });
@@ -308,7 +373,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       await royal.audit.record({ actor: "system", action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
       return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
     }
-  };
+  }
 }
 
 /* Supabase-backed identity: the same accounts that sign in to the calculator.
