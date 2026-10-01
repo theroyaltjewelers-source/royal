@@ -93,7 +93,7 @@ export class AgentActivityLedger {
           feed = ((f.body && f.body.events) || []).filter((e) => e.type !== "outbound" && dayOf(Date.parse(e.created_at), this.tz) === day);
         } catch (e) { feed = { error: String(e.message || e) }; }
       }
-      return { ...meta, native, delegated, bot: bot ? { connection: bot.connection || bot.status, last_seen: bot.last_seen, last_error: bot.last_error } : null, feed };
+      return { ...meta, native, delegated, bot: bot ? { connection: bot.connection, last_verified_at: bot.last_verified_at, last_seen: bot.last_seen, last_error: bot.last_error } : null, feed };
     }));
     return { day, agents: out.map((r, i) => (r.status === "fulfilled" ? r.value : { ...AGENTS.find((a) => a.id === agents[i]), error: String(r.reason && r.reason.message || r.reason) })) };
   }

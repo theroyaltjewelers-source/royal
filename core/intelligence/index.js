@@ -400,7 +400,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
   async function doBotDelegation(agentId, text, convo, conversation_id) {
     if (!bots) return say(RUN_STATUS.NOT_CONNECTED, "The Grok Bot bridge isn't running.", { type: "text" });
     const st = await bots.status(agentId);
-    if (st.status !== "CONNECTED") return say(RUN_STATUS.NOT_CONNECTED, agentId.toUpperCase() + "'s Grok Bot is " + String(st.status).toLowerCase().replace(/_/g, " ") + ".", { type: "text" });
+    if (!st.can_send) return say(RUN_STATUS.NOT_CONNECTED, agentId.toUpperCase() + "'s Grok Bot is " + String(st.connection || "NOT_CONFIGURED").toLowerCase().replace(/_/g, " ") + ".", { type: "text" });
     /* Known broken: don't send work into a bot that refuses ROYAL's key or
        has stopped answering; say so instead. */
     if (["AUTH_FAILED", "FAILED"].indexOf(st.connection) >= 0)

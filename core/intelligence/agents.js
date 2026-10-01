@@ -56,9 +56,11 @@ export function routeAgents(intent, text, { registry, bots = null, flags = {} } 
 function adapterFor(agent, { bots, flags }) {
   if (agent.status === "ACTIVE") return { adapter: "internal", available: true };
   const bot = bots && bots.find((b) => b.id === agent.id);
-  if (flags.advanced_agent_orchestration && bot && bot.status === "CONNECTED") return { adapter: "grokbot", available: true };
+  /* Routed work goes only to a bot with a verified round trip; a bot that is
+     merely configured is not trusted with work it wasn't explicitly given. */
+  if (flags.advanced_agent_orchestration && bot && bot.can_receive_tasks) return { adapter: "grokbot", available: true };
   return { adapter: bot ? "grokbot" : "internal", available: false,
-    why: bot ? (flags.advanced_agent_orchestration ? agent.name + "'s Grok Bot is " + bot.status.toLowerCase().replace(/_/g, " ") + "." : "Delegating to Grok Bots is switched off (advanced_agent_orchestration).") : agent.name + " is not connected yet." };
+    why: bot ? (flags.advanced_agent_orchestration ? agent.name + "'s Grok Bot is " + String(bot.connection).toLowerCase().replace(/_/g, " ") + "." : "Delegating to Grok Bots is switched off (advanced_agent_orchestration).") : agent.name + " is not connected yet." };
 }
 
 export class AgentTasks {
@@ -121,10 +123,11 @@ export class AgentTasks {
 export class GrokBotAdapter {
   constructor({ bridge, tasks }) { this.bridge = bridge; this.tasks = tasks; }
   async status(botId, realm = "BUSINESS") {
-    if (!this.bridge) return { status: "NOT_CONNECTED", detail: "The Grok Bot bridge is not running." };
+    if (!this.bridge) return { connection: "NOT_CONFIGURED", can_send: false, can_receive_tasks: false, detail: "The Grok Bot bridge is not running." };
     const l = await this.bridge.listBots({ realm });
     const b = l.body && l.body.bots ? l.body.bots.find((x) => x.id === botId) : null;
-    return b ? { status: b.status, connection: b.connection || null, last_seen: b.last_seen, last_error: b.last_error } : { status: "NOT_CONNECTED", detail: "No such bot in this realm." };
+    return b ? { connection: b.connection, can_send: b.can_send, can_receive_tasks: b.can_receive_tasks, last_seen: b.last_seen, last_verified_at: b.last_verified_at, last_error: b.last_error }
+      : { connection: "NOT_CONFIGURED", can_send: false, can_receive_tasks: false, detail: "No such bot in this realm." };
   }
   async delegate({ agent, objective, handoff, conversation_id, realm = "BUSINESS" }) {
     const task = await this.tasks.create({ agent, adapter: "grokbot", objective, handoff, conversation_id, realm });

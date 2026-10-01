@@ -262,9 +262,9 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       try {
         const l = await bridge.listBots({ realm: REALM.BUSINESS });
         for (const b of (l.body && l.body.bots) || []) {
-          const c = b.connection || b.status;
-          out.push({ system: "Grok Bot: " + b.name, state: c === "CONNECTED_VERIFIED" ? H : ["DEGRADED", "UNRESPONSIVE", "CONFIGURED_UNVERIFIED"].indexOf(c) >= 0 ? D : ["FAILED", "AUTH_FAILED"].indexOf(c) >= 0 ? X : N,
-            evidence: c.toLowerCase().replace(/_/g, " ") + (b.last_seen ? ", last heard " + b.last_seen.slice(0, 16).replace("T", " ") + " UTC" : "") + (b.last_error ? ", last error " + b.last_error : "") });
+          const c = b.connection;
+          out.push({ system: "Grok Bot: " + b.name, state: c === "CONNECTED_VERIFIED" ? H : ["DEGRADED", "UNRESPONSIVE", "CONFIGURED_UNVERIFIED", "VERIFYING"].indexOf(c) >= 0 ? D : ["FAILED", "AUTH_FAILED"].indexOf(c) >= 0 ? X : N,
+            evidence: c.toLowerCase().replace(/_/g, " ") + (b.last_verified_at ? ", last verified " + b.last_verified_at.slice(0, 16).replace("T", " ") + " UTC" + (b.last_roundtrip_ms != null ? " (" + b.last_roundtrip_ms + " ms round trip)" : "") : "") + (b.last_seen ? ", last heard " + b.last_seen.slice(0, 16).replace("T", " ") + " UTC" : "") + (b.last_error ? ", last error " + b.last_error : "") });
         }
       } catch (e) { out.push({ system: "Grok Bots", state: X, evidence: "couldn't read the bridge: " + (e.message || e) }); }
     } else out.push({ system: "Grok Bots", state: N, evidence: "the bridge isn't running" });
