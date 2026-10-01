@@ -676,7 +676,7 @@ skill(meta("agent_activity", "Agent daily activity", ALL, { purpose: "What each 
     (reported.length ? " What " + reported.join(" and ") + " posted is their own report; I haven't verified it." : "") +
     (unreadable.length ? " I couldn't read " + unreadable.join(" and ") + " fully, so that part is missing." : "");
   return { status: unreadable.length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: head + " " + lines.join(" ") + tail, findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" },
-    data: { day: review.day, agents: review.agents.map((a) => ({ id: a.id, runs: a.native ? a.native.runs : 0, tasks: (a.delegated || []).length, reported: a.feed && a.feed.length ? a.feed.length : 0 })) } };
+    data: { day: review.day, lines, agents: review.agents.map((a) => ({ id: a.id, runs: a.native ? a.native.runs : 0, tasks: (a.delegated || []).length, reported: a.feed && a.feed.length ? a.feed.length : 0 })) } };
 });
 
 /* "What are you working on?": the delegated work that is actually open. */

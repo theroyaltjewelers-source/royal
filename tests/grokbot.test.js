@@ -317,7 +317,7 @@ test("input is validated: unknown bots 404, sizes and types enforced", async () 
   assert.equal((await I.call("POST", "/v1/bots/nobody/message", { content: "x" })).status, 404);
   assert.equal((await I.call("GET", "/v1/bots/nobody/feed")).status, 404);
   assert.equal((await I.call("POST", "/v1/bots/ace/message", { content: "" })).status, 400);
-  assert.equal((await I.call("POST", "/v1/bots/ace/message", { content: "x".repeat(2001) })).status, 413);
+  assert.equal((await I.call("POST", "/v1/bots/ace/message", { content: "x".repeat(8001) })).status, 413);
   assert.equal((await I.call("POST", "/v1/bots/ace/message", { content: "x", skill: "<script>" })).status, 400);
   const ace = await tokenFor(I, "ace");
   assert.equal((await I.call("POST", "/v1/bots/ace/events", { type: "outbound", content_markdown: "x" }, ace)).status, 400, "bots cannot forge outbound records");
@@ -529,7 +529,15 @@ test("a bot is CONNECTED_VERIFIED only after a real round trip, never for config
     /* a post with no request_id proves the bot can reach me, not that it got anything */
     await A.call("POST", "/v1/bots/grace/events", { type: "message", content_markdown: "hello" }, tok);
     assert.equal(await conn("grace"), "VERIFYING", "an uncorrelated post does not verify");
-    await A.call("POST", "/v1/bots/grace/events", { request_id: v.json.request_id, type: "result", content_markdown: "ready" }, tok);
+    /* prose alone, or the wrong nonce, is not a verified round trip */
+    await A.call("POST", "/v1/bots/grace/events", { request_id: v.json.request_id, type: "message", content_markdown: "ready" }, tok);
+    assert.equal(await conn("grace"), "VERIFYING", "prose is not the structured reply");
+    const nonce = /^nonce: (\S+)$/m.exec(sent.body.content)[1], handoff_id = /^handoff_id: (\S+)$/m.exec(sent.body.content)[1];
+    const env = (n) => ({ agent_id: "grace", handoff_id, nonce: n, name: "Grace", role: "Client experience and production", status: "REPORTED_COMPLETE", summary: "Ready." });
+    const bad = await A.call("POST", "/v1/bots/grace/events", { request_id: v.json.request_id, type: "result", content_markdown: "check", envelope: env("n_wrong00") }, tok);
+    assert.match(bad.json.envelope, /^invalid: nonce does not match/);
+    assert.equal(await conn("grace"), "VERIFYING", "the wrong nonce does not verify");
+    await A.call("POST", "/v1/bots/grace/events", { request_id: v.json.request_id, type: "result", content_markdown: "Ready.", envelope: env(nonce) }, tok);
     assert.equal(await conn("grace"), "CONNECTED_VERIFIED");
     const g = (await A.call("GET", "/v1/bots")).json.bots.find((b) => b.id === "grace");
     assert.ok(g.last_verified_at && g.last_roundtrip_ms >= 0 && g.can_receive_tasks === true && g.recent_success_rate === 1, JSON.stringify(g));

@@ -10,6 +10,7 @@ import { stableHash } from "../core/util.js";
 import { passcodeAuth } from "./passcode.js";
 import { isBotToken } from "../core/grokbot/tokens.js";
 import { identityPrompt } from "../core/identity.js";
+import { replyInstructions } from "../core/grokbot/envelope.js";
 
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
@@ -19,7 +20,7 @@ const MAX_BODY = 5 * 1024 * 1024;
    so a stale caller is told exactly what changed. */
 const ROUTES = [
   [/^\/v1\/health$/, "GET"], [/^\/v1\/login$/, "POST"], [/^\/v1\/login-methods$/, "GET"],
-  [/^\/v1\/(status|agents|boot|skills|domains|activity|developer\/log|developer\/metrics|intelligence\/status|tools|agents\/tasks|knowledge\/search|decisions|bots|feed\/stream)$/, "GET"],
+  [/^\/v1\/(status|agents|boot|skills|domains|activity|developer\/log|developer\/metrics|intelligence\/status|tools|agents\/tasks|knowledge\/search|decisions|bots|feed\/stream|inbox)$/, "GET"],
   [/^\/v1\/(provider\/test|voice\/session|voice\/speak|command|ingest\/calculator|integrations\/grokbot\/run|integrations\/grokbot\/result)$/, "POST"],
   [/^\/v1\/decisions\/[A-Za-z0-9_]+\/resolve$/, "POST"], [/^\/v1\/integrations\/grokbot\/result\/[0-9a-fA-F-]{36}$/, "GET"],
   [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/token$/, "POST, DELETE"], [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(message|verify|events)$/, "POST"],
@@ -132,11 +133,21 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       if (r.body.request_id) await audit("BOT_MESSAGE_SENT", "Sent a message to the " + id + " bot (" + (r.body.ok ? "delivered" : r.body.error) + ").", (b && b.realm) || realm);
       return reply(req, r);
     }
-    /* A real connection check: a message the bot must answer.  The bot is
-       CONNECTED_VERIFIED only once it posts back with its own token. */
+    /* A real connection test, through the orchestrator: a nonce the bot
+       must repeat, with its name and role, in a structured result.  The
+       bot is CONNECTED_VERIFIED only once that comes back with its own
+       token, and the test is an AgentTask in the ledger like any other. */
     if (action === "verify" && req.method === "POST") {
-      const r = await bridge.sendMessage(id, { skill: "connection_check", content: "Connection check from ROYAL. Reply with a result event for this request_id, saying ready. Take no other action." }, { realm, requestedBy: "tahir" });
-      if (r.body.request_id) await audit("BOT_VERIFY_SENT", "Sent a connection check to the " + id + " bot (" + (r.body.ok ? "delivered, waiting for its reply" : r.body.error) + ").", realm);
+      if (royal.orchestrator && royal.orchestrator.bridge && ["ace", "grace", "ledger", "house", "forge"].indexOf(id) >= 0) {
+        const o = await royal.orchestrator.connectionTest(id, { realm: realm || "BUSINESS" });
+        await audit("BOT_VERIFY_SENT", "Sent a connection test to the " + id + " bot (" + (o.delivered ? "delivered, waiting for its reply" : o.why || o.status) + ").", realm);
+        return json(req, o.delivered ? 200 : 502, o.delivered ? { ok: true, bot_id: id, request_id: o.task.request_id, task_id: o.task.id, status: "delivered" }
+          : { ok: false, error: o.status, message: o.why || "The test could not be delivered." });
+      }
+      const nonce = "n_" + Math.random().toString(36).slice(2, 12), handoff = "hof_" + Math.random().toString(36).slice(2, 12);
+      const r = await bridge.sendMessage(id, { skill: "connection_check", content: "Connection test from ROYAL. Return your name, role and the supplied nonce. Take no external action.\nhandoff_id: " + handoff + "\nnonce: " + nonce + "\n\n" +
+        replyInstructions({ bot_id: id, task_id: "check", handoff_id: handoff, nonce }) }, { realm, requestedBy: "tahir" });
+      if (r.body.request_id) await audit("BOT_VERIFY_SENT", "Sent a connection test to the " + id + " bot (" + (r.body.ok ? "delivered, waiting for its reply" : r.body.error) + ").", realm);
       return reply(req, r);
     }
     if (action === "events" && req.method === "POST") return fail(req, 403, "BOT_ONLY", "Only the bot itself posts to its events, with its own token.");
@@ -341,6 +352,17 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
           if (speechCache.size > SPEECH_CACHE) speechCache.delete(speechCache.keys().next().value);
         }
         return new Response(hit.audio, { status: 200, headers: { "Content-Type": hit.type, "Content-Length": String(hit.audio.length), ...SEC, ...cors(req) } });
+      }
+      /* Answers that came back after their request returned (a Grok Bot
+         replying later), for one conversation, and how many hand-offs are
+         still open there.  Business only. */
+      if (req.method === "GET" && path === "/v1/inbox") {
+        if (realmQ === "PERSONAL") return json(req, 200, { ok: true, items: [], open: 0 });
+        const cid = String(url.searchParams.get("conversation_id") || user.id).slice(0, 80);
+        const since = Number(url.searchParams.get("since") || 0) || 0;
+        const key = "BUSINESS:" + cid;
+        const [items, open] = await Promise.all([royal.orchestrator.readInbox(key, since), royal.orchestrator.openFor(key)]);
+        return json(req, 200, { ok: true, items, open: open.length, now: Date.now() });
       }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;

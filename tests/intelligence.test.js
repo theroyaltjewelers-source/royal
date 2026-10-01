@@ -572,21 +572,20 @@ test("every intelligence answer carries a valid presentation, and Personal never
   assert.equal(p.skill, "personal");
 });
 
-test("Grok Bot delegation happens only when switched on, and a bot's report is not verified", async () => {
+test("an explicit request reaches the real bot without any flag; a bot's report is not verified", async () => {
   const { createBridge } = await import("../core/grokbot/bridge.js");
   const hooks = [];
   const bridge = createBridge({ env: { GROKBOT_ENABLED: "true", GROKBOT_HOUSE_WEBHOOK_URL: "https://hooks.example/house", GROKBOT_HOUSE_WEBHOOK_KEY: "k" }, logger: { warn() {}, log() {} },
     fetchImpl: async (u, init) => { hooks.push({ u, body: JSON.parse(init.body) }); return new Response("{}", { status: 200 }); } });
-  const off = await royalWith({ bridge });
-  const o = await say(off, "Have HOUSE build a campaign around the finished pendant");
-  assert.match(o.summary, /isn't connected/); assert.equal(hooks.length, 0);
-  const on = await royalWith({ bridge, flags: { advanced_agent_orchestration: true } });
-  const d = await say(on, "Have HOUSE build a campaign around the finished pendant");
-  assert.match(d.summary, /handed it to HOUSE/); assert.equal(hooks.length, 1);
-  assert.equal(hooks[0].body.bot_id, "house"); assert.match(hooks[0].body.content, /Do not contact anyone or take any action/);
-  const tasks = await on.intelligence.tasks.list({});
-  assert.equal(tasks[0].status, "IN_PROGRESS"); assert.equal(tasks[0].adapter, "grokbot");
+  const r = await royalWith({ bridge, botWaitMs: 30 });
+  const d = await say(r, "Have HOUSE build a campaign around the finished pendant");
+  assert.match(d.summary, /^I sent that to HOUSE\. I'll bring the answer here when it comes\./); assert.equal(hooks.length, 1);
+  assert.equal(hooks[0].body.bot_id, "house"); assert.match(hooks[0].body.content, /Take no external action/);
+  assert.match(hooks[0].body.content, /^handoff_id: hof_/m);
+  const tasks = await r.intelligence.tasks.list({});
+  assert.equal(tasks[0].status, "IN_PROGRESS"); assert.equal(tasks[0].adapter, "grokbot"); assert.equal(tasks[0].provenance, "EXPLICIT_BOT_REQUEST");
   assert.equal(d.delegations[0].verified, false);
+  assert.deepEqual(d.pending.map((p) => p.agent), ["house"]);
 });
 
 /* ----------------------------------------------------- review fixes --- */
@@ -823,23 +822,23 @@ test("review: outreach is written by the specialist whose capability fits, recor
   assert.equal(classifyByRules("Write her an intro", { active_person: { name: "Jane" }, focus: "research" }).entities.agent, null, "the rules do not pretend Tahir named ACE");
 });
 
-test("review: delegation to an external Grok Bot is permission-checked, audited and tracked; off means off", async () => {
+test("review: delegation to an external Grok Bot is permission-checked, audited and tracked; the bridge switched off means nothing is sent", async () => {
   const { createBridge } = await import("../core/grokbot/bridge.js");
   const hooks = [];
   const env = { GROKBOT_ENABLED: "true", GROKBOT_BOTS: "house", GROKBOT_HOUSE_WEBHOOK_URL: "https://hooks.example/house", GROKBOT_HOUSE_WEBHOOK_KEY: "k" };
   const bridge = createBridge({ env, fetchImpl: async (u, init) => { hooks.push({ u: String(u), body: JSON.parse(init.body) }); return new Response("{}", { status: 200 }); }, logger: { warn() {} } });
-  const r = await royalWith({ provider: new UnavailableProvider("off"), bridge, flags: { advanced_agent_orchestration: true } });
+  const r = await royalWith({ provider: new UnavailableProvider("off"), bridge, botWaitMs: 30 });
   const out = await say(r, "Have HOUSE build a campaign around the finished pendant", "bot");
-  assert.match(out.summary, /handed it to HOUSE/);
-  assert.equal(hooks.length, 1); assert.match(hooks[0].body.content, /Do not contact anyone or take any action/);
+  assert.match(out.summary, /I sent that to HOUSE/);
+  assert.equal(hooks.length, 1); assert.match(hooks[0].body.content, /Take no external action/);
   const log = await r.audit.developerLog({ limit: 200 });
   assert.ok(log.some((e) => e.action === "TOOL_CALLED" && e.tool === "delegate_to_bot"), "the gate recorded it");
   const tasks = await r.intelligence.tasks.list({});
   assert.equal(tasks.length, 1); assert.equal(tasks[0].status, "IN_PROGRESS");
 
   const offBridge = createBridge({ env: { ...env, GROKBOT_ENABLED: "false" }, fetchImpl: async () => { throw new Error("must not be called"); }, logger: { warn() {} } });
-  const r2 = await royalWith({ provider: new UnavailableProvider("off"), bridge: offBridge, flags: { advanced_agent_orchestration: true } });
+  const r2 = await royalWith({ provider: new UnavailableProvider("off"), bridge: offBridge, botWaitMs: 30 });
   const off = await say(r2, "Have HOUSE build a campaign around the finished pendant", "bot");
-  assert.doesNotMatch(off.summary, /handed it/);
+  assert.doesNotMatch(off.summary, /sent that/); assert.match(off.summary, /HOUSE's Grok Bot is disabled|no native runtime/);
   assert.equal(r2.intelligence.status().grok_bots, "DISABLED");
 });
