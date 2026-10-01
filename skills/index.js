@@ -15,7 +15,7 @@ import { diffSnapshots } from "../realms/business/royal-t/changes.js";
 import { draftFor } from "./drafts.js";
 import { describeSelf, greetingLine } from "../core/identity.js";
 import { definitionQuery } from "../core/house_language.js";
-import { objectiveWords as objectiveWordsFor } from "../core/agent_ledger.js";
+import { objectiveWords as objectiveWordsFor, dayOf } from "../core/agent_ledger.js";
 import { congruence } from "../core/congruence.js";
 
 const ALL = ["ace", "grace", "ledger", "forge"];
@@ -341,6 +341,51 @@ skill(meta("what_changed", "What Changed?", [], { purpose: "Differences between 
     findings: [], surface: { type: "changes", basis: base.basis, changes: d.changes, baseline_at: d.baseline_at, current_at: d.current_at } };
 });
 
+/* ------------------------------------------------------ daily digest --- */
+/* "What happened today?": the day from records only.  Business events the
+   calculator's snapshots produced, decisions raised and resolved, what my
+   specialists ran, what the Grok Bots reported (their own words, not
+   verified), and how fresh the calculator is.  No model, nothing invented. */
+skill(meta("daily_digest", "Daily House Digest", [], { purpose: "What happened today, from events, decisions, the agent ledger and the calculator.", sources: [] }), async (ctx) => {
+  const now = ctx.now || Date.now(), today = dayOf(now);
+  const onDay = (t) => t != null && dayOf(typeof t === "number" ? t : Date.parse(t)) === today;
+  const parts = [], missing = [];
+  const calc = await ctx.connector.status(now);
+  if (!calc.connected) missing.push("the Project Calculator (never connected)");
+  else if (calc.freshness === "STALE") parts.push("The calculator last reported " + calc.age + ", so anything since then is missing.");
+  let evs = [];
+  try { evs = (ctx.events ? await ctx.events.recent({ limit: 500 }) : []).filter((e) => onDay(e.occurred_at)); } catch (_) { missing.push("the event log"); }
+  const of = (...types) => evs.filter((e) => types.indexOf(e.type) >= 0);
+  const said = (e) => (e.payload && e.payload.text ? String(e.payload.text).replace(/\.$/, "") : null);
+  const pay = of("PAYMENT_RECEIVED"), moved = of("PRODUCTION_STAGE_CHANGED"), ready = of("PROJECT_READY"), fresh = of("LEAD_CREATED"),
+    sent = of("MESSAGE_SENT"), bounced = of("MESSAGE_FAILED"), broken = of("INTEGRATION_FAILED");
+  const list = (xs, n = 3) => xs.map(said).filter(Boolean).slice(0, n).join("; ");
+  if (pay.length) parts.push(plural(pay.length, "payment") + " came in" + (list(pay) ? ": " + list(pay) : "") + ".");
+  if (ready.length) parts.push(plural(ready.length, "piece") + " became ready" + (list(ready) ? ": " + list(ready) : "") + ".");
+  if (moved.length) parts.push(plural(moved.length, "stage change") + (list(moved) ? ": " + list(moved) : "") + ".");
+  if (fresh.length) parts.push(plural(fresh.length, "new project") + " opened.");
+  if (sent.length || bounced.length) parts.push((sent.length ? plural(sent.length, "message") + " sent" : "") + (sent.length && bounced.length ? ", " : "") + (bounced.length ? bounced.length + " failed" : "") + ".");
+  if (broken.length) parts.push("The calculator sent " + plural(broken.length, "snapshot") + " I had to refuse.");
+  let ds = [];
+  try { ds = await ctx.decisions.list(); } catch (_) { missing.push("decisions"); }
+  const raised = ds.filter((d) => onDay(d.created_at)), resolved = ds.filter((d) => d.resolved_at && onDay(d.resolved_at));
+  if (raised.length || resolved.length) parts.push((raised.length ? plural(raised.length, "decision") + " raised" : "") + (raised.length && resolved.length ? ", " : "") + (resolved.length ? resolved.length + " resolved" : "") + ".");
+  if (ctx.ledger) {
+    try {
+      const rv = await ctx.ledger.review({ day: today, tasks: ctx.tasks, bridge: ctx.bridge, realm: "BUSINESS" });
+      const runs = rv.agents.reduce((a, x) => a + (x.native ? x.native.runs : 0), 0);
+      const failed = rv.agents.reduce((a, x) => a + (x.native ? x.native.failed + x.native.timed_out : 0) + (x.delegated || []).filter((t) => ["FAILED", "TIMED_OUT"].indexOf(t.status) >= 0).length, 0);
+      const reports = rv.agents.filter((x) => Array.isArray(x.feed) && x.feed.length).map((x) => x.name);
+      if (runs) parts.push("My specialists ran " + plural(runs, "time") + (failed ? ", " + failed + " didn't finish" : "") + ".");
+      if (reports.length) parts.push(reports.join(" and ") + " posted updates (their own report, not verified).");
+    } catch (_) { missing.push("the agent ledger"); }
+  }
+  const head = parts.length ? "Here's today. " : "Nothing is recorded for today yet. ";
+  const tail = missing.length ? " I couldn't read " + missing.join(", ") + ", so that part is missing." : "";
+  return { status: missing.length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: (head + parts.join(" ") + tail).trim(), findings: [],
+    surface: { type: "changes", basis: "today", changes: evs.filter((e) => said(e)).slice(0, 20).map((e) => ({ kind: e.type, project_id: e.entity ? e.entity.id : null, text: said(e), tone: e.type === "PAYMENT_RECEIVED" || e.type === "PROJECT_READY" ? "gain" : "info" })) } };
+});
+
 /* ---------------------------------------------------- decisions open --- */
 skill(meta("decisions_open", "Decision Brief", [], { purpose: "Everything waiting on Tahir's approval.", sources: [] }), async (ctx) => {
   const ds = await openDecisions(ctx);
@@ -383,8 +428,20 @@ skill(meta("project_status", "Project Status", ["grace", "ledger", "ace"], { pur
     tahir_required: top ? top.need : N.NONE,
   };
   const verdict = top && [N.DECIDE, N.DO, N.APPROVE].indexOf(top.need) >= 0 ? "Needs you: " + top.title.charAt(0).toLowerCase() + top.title.slice(1) + "."
-    : blockers.length ? "Held: " + blockers[0] : "On track. " + answer.current_state;
-  return { summary: verdict, findings: mine,
+    : blockers.length ? "Held: " + blockers[0] : "On track.";
+  /* Answer the question that was asked, about the piece by name: the stage
+     for "what stage", the cause for "why", who and since when for "waiting",
+     and otherwise the piece, its stage, its date and its balance. */
+  const who = (p.client && p.client.name ? p.client.name + "'s " : "") + (p.name || p.id);
+  const stageSay = "It's in " + String(p.stage).toLowerCase() + (p.due ? ", target " + p.due : "") + ".";
+  const owed = p.outstanding > 0.005 ? money(p.outstanding) + " still owed." : "Paid in full.";
+  const q = ctx.text || "";
+  let summary;
+  if (why) summary = who + ": " + (blockers.length ? blockers.join(" ") : "nothing in the records explains a hold, so the cause is unknown.") + (top ? " " + verdict : "");
+  else if (/\b(waiting|waiting on|who are we)\b/i.test(q)) summary = waiting.length ? who + ": " + waiting.map((w) => "waiting on " + w.waiting_for_entity + (w.days !== null ? " for " + plural(w.days, "day") : "")).join("; ") + "." : who + ": nothing recorded as waiting.";
+  else if (/\b(stage|where is it|status)\b/i.test(q)) summary = who + ". " + stageSay;
+  else summary = who + ". " + stageSay + " " + owed + " " + verdict;
+  return { summary: summary.replace(/\s+/g, " ").trim(), findings: mine,
     surface: { type: "project", project: p, answer, items: mine, waiting, commitments: cmts, decisions: ds } };
 });
 
@@ -602,6 +659,18 @@ skill(meta("agent_activity", "Agent daily activity", ALL, { purpose: "What each 
   const failed = review.agents.flatMap((a) => (a.delegated || []).filter((t) => t.status === "FAILED").map((t) => a.name + ": " + plainText(t.objective, 80)));
   const unreadable = review.agents.filter((a) => a.error || (a.feed && a.feed.error)).map((a) => a.name);
   const reported = review.agents.filter((a) => a.feed && a.feed.length).map((a) => a.name);
+  /* "Why didn't GRACE finish that?": the recorded reason for each run or
+     task that ended badly today, or plainly that nothing did. */
+  if (/\bwhy\b.*\b(didn'?t|did not|hasn'?t|has not|not|fail|stop|finish)/i.test(ctx.text || "")) {
+    const REASON = { TIMEOUT: "it ran past its deadline", ERROR: "it hit an error", INVALID_RESULT: "it returned something I couldn't validate", NOT_CONNECTED: "it isn't connected" };
+    const why = review.agents.flatMap((a) => ((a.native && a.native.recent) || []).filter((x) => x.status !== "OK" && x.status !== "PARTIAL")
+      .map((x) => a.name + " on " + objectiveWordsFor(x.skill) + ": " + (REASON[x.reason] || "it failed") + (x.error && x.reason === "ERROR" ? " (" + plainText(x.error, 80) + ")" : ""))
+      .concat((a.delegated || []).filter((t) => ["FAILED", "TIMED_OUT", "CANCELLED"].indexOf(t.status) >= 0)
+        .map((t) => a.name + "'s Grok Bot on “" + plainText(t.objective, 60) + "”: " + String(t.fail_reason || t.cancel_reason || t.status).toLowerCase().replace(/_/g, " "))));
+    const who = named.length ? review.agents.map((a) => a.name).join(" and ") : "my team";
+    return { status: RUN_STATUS.OK, summary: why.length ? "Here's what didn't finish today, from the record. " + why.slice(0, 6).join(". ") + "." : "Nothing " + who + " was given today failed or was left unfinished, by the record.",
+      findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" } };
+  }
   const head = named.length === 1 ? "I checked " + review.agents[0].name + "'s record for today." : "I checked today's record for " + (named.length ? "them" : "all five") + ".";
   const tail = (failed.length ? " Needs you: " + failed.length + " delegated " + (failed.length === 1 ? "task" : "tasks") + " failed." : "") +
     (reported.length ? " What " + reported.join(" and ") + " posted is their own report; I haven't verified it." : "") +

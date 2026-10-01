@@ -217,3 +217,62 @@ test("every task status in the enum is reachable by code", async () => {
   const src = (await readFile(join(ROOT, "core/intelligence/agents.js"), "utf8"));
   for (const s of Object.keys(TASK_STATUS)) assert.ok(new RegExp("TS\\." + s + "\\b").test(src), s + " is never set");
 });
+
+/* --------------------------------------------------- conversation flow --- */
+
+import { GrokProvider } from "../core/providers/grok.js";
+
+function modelRoyal() {
+  const prompts = [];
+  const fetchImpl = async (url, init) => {
+    const b = JSON.parse(init.body); prompts.push(JSON.stringify(b));
+    const text = JSON.stringify({ answer: "It pushes $13,000 of receivables further out.", needs_outside_world: false, based_on: ["p0"], unknowns: [], proposed_actions: [] });
+    return new Response(JSON.stringify({ choices: [{ message: { content: text } }], output: [{ type: "message", content: [{ type: "output_text", text }] }] }), { status: 200 });
+  };
+  const r = createRoyal({ store: new MemoryStore(), clock: () => NOW, provider: new GrokProvider({ apiKey: "xai-SECRETSECRETSECRET1234", model: "grok-4.3", fetchImpl }) });
+  return { r, prompts };
+}
+
+test("a project answer names the piece and answers the question asked (it used to say only “Needs you: …”)", async () => {
+  const r = await houseRoyal();
+  const ask = async (q) => (await r.handle({ content: q, conversation_id: "c1" })).summary;
+  assert.match(await ask("Pull up Marcus."), /^Marcus Hill's Cuban link chain\. It's in production, target 2026-09-20\. \$13,000 still owed\./);
+  assert.match(await ask("What stage is it in?"), /^Marcus Hill's Cuban link chain\. It's in production/);
+  assert.match(await ask("Why hasn't it moved?"), /not fully funded|Waiting on/);
+  assert.match(await ask("What happened with Marcus?"), /^Marcus Hill's Cuban link chain/);
+});
+
+test("follow-ups about the record under discussion stay with the House and the model is given that record (they used to go to world knowledge)", async () => {
+  const { r, prompts } = modelRoyal();
+  await r.ingestCalculator(house());
+  await r.handle({ content: "Pull up Marcus.", conversation_id: "c1" });
+  for (const q of ["What's the financial impact?", "Does it affect Saturday?", "What would you do?"]) {
+    prompts.length = 0;
+    const a = await r.handle({ content: q, conversation_id: "c1" });
+    assert.equal(a.skill, "open_question", q + " -> " + a.skill);
+    assert.ok(prompts.some((p) => /Under discussion: Marcus Hill's Cuban link chain \(PRJ-2026-00101\)/.test(p)), q + ": the model saw the record");
+    assert.equal(a.timing.model_calls, 1, q + ": one call, no classifier in front");
+  }
+});
+
+test("what happened today: payments, stage changes and my specialists' runs, from events and the ledger, with no model", async () => {
+  const r = await houseRoyal();
+  const s = house(); const p = s.projects.find((x) => x.id === "PRJ-2026-00101");
+  p.paid += 2000; p.outstanding -= 2000; s.generated_at += 60000;
+  await r.ingestCalculator(s);
+  await r.handle({ content: "What needs me?", conversation_id: "c1" });
+  const a = await r.handle({ content: "What happened today?", conversation_id: "c1" });
+  assert.equal(a.skill, "daily_digest"); assert.equal(a.timing.model_calls, 0);
+  assert.match(a.summary, /payment came in/); assert.match(a.summary, /My specialists ran \d+ times/);
+});
+
+test("why didn't GRACE finish: the recorded reason, from the ledger", async () => {
+  const saved = SPECIALISTS.grace;
+  SPECIALISTS.grace = () => new Promise(() => {});
+  try {
+    const r = await houseRoyal({ delegationTimeoutMs: 30 });
+    await r.handle({ content: "What needs me?", conversation_id: "c1" });
+    const a = await r.handle({ content: "Why didn't GRACE finish that?", conversation_id: "c1" });
+    assert.match(a.summary, /GRACE on triage: it ran past its deadline/);
+  } finally { SPECIALISTS.grace = saved; }
+});
