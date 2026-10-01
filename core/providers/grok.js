@@ -222,7 +222,7 @@ export class GrokProvider {
     }
   }
 
-  /* ROYAL's spoken voice: text in, MP3 out, through xAI text to speech
+  /* ROYAL's spoken voice: text in, WAV out (24 kHz), through xAI text to speech
      (POST /v1/tts).  The same voice as realtime voice, so ROYAL sounds the
      same on every device and in both voice modes.  Returns the audio bytes;
      the key never leaves the server. */
@@ -236,8 +236,11 @@ export class GrokProvider {
     try {
       const r = await this.fetch(this.baseUrl + "/tts", {
         method: "POST", signal: ctl.signal,
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key, Accept: "audio/mpeg" },
-        body: JSON.stringify({ text: words, voice_id: voice, language: "en", output_format: { codec: "mp3", sample_rate: 44100, bit_rate: 128000 } }),
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key, Accept: "audio/wav" },
+        /* WAV, not MP3: MP3 pads each clip with a few milliseconds of
+           silence, which would be heard as a tick between sentences when the
+           page plays them back to back. */
+        body: JSON.stringify({ text: words, voice_id: voice, language: "en", output_format: { codec: "wav", sample_rate: 24000 } }),
       });
       if (!r.ok) {
         let j = null; try { j = await r.json(); } catch (_) { j = null; }
@@ -248,7 +251,7 @@ export class GrokProvider {
       const audio = new Uint8Array(await r.arrayBuffer());
       if (!audio.length) return { ok: false, failed_because: "PROVIDER_REPLY_UNEXPECTED", retryable: true };
       if (this.metrics) this.metrics.observe("provider.speech", Date.now() - t0);
-      return { ok: true, audio, type: "audio/mpeg", voice };
+      return { ok: true, audio, type: "audio/wav", voice };
     } catch (e) {
       return { ok: false, failed_because: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK", retryable: true };
     } finally { clearTimeout(timer); }

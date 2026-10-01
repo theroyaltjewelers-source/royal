@@ -520,6 +520,14 @@ async function showSheet(view) {
 
 function intelLines() {
   const i = INTEL; if (!i) return "";
+  /* Measured on this device: the median time from the question to the
+     first sound, and how many gaps the voice has had. */
+  const voiceLine = () => {
+    const st = (rt && rt.pb && rt.pb.stats && rt.pb.stats.replies ? rt.pb.stats : null) || voice.stats;
+    if (!st || !st.replies) return "";
+    const f = st.first_audio_ms.slice().sort((a, b) => a - b), med = f.length ? f[Math.floor(f.length / 2)] : null;
+    return (med !== null ? " · first sound " + med + " ms" : "") + " · " + st.underruns + (st.underruns === 1 ? " gap" : " gaps");
+  };
   const row = (k, v, ok) => '<li class="' + (ok ? "ok" : "no") + '"><span>' + esc(k) + "</span><em>" + esc(v) + "</em></li>";
   const word = (x) => String(x || "unknown").toLowerCase().replace(/_/g, " ");
   return '<p class="sb-h">Intelligence</p><ul class="sb-sys">' +
@@ -529,6 +537,7 @@ function intelLines() {
     row("EMAIL VERIFICATION", word(i.contacts.verification), i.contacts.verification === "CONNECTED") +
     row("EMAIL SENDING", word(i.email.status) + " · " + word(i.sending), i.email.status === "CONNECTED" && i.sending === "ENABLED") +
     row("REALTIME VOICE", word(i.realtime_voice), i.realtime_voice === "AVAILABLE") +
+    row("ROYAL'S VOICE", word(i.spoken_voice || "DISABLED") + voiceLine(), i.spoken_voice === "AVAILABLE") +
     row("GROK BOT AGENTS", word(i.agent_orchestration), i.agent_orchestration === "ENABLED") + "</ul>";
 }
 

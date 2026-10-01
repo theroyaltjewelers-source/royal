@@ -28,7 +28,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
   const SEC = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" };
   /* Spoken replies: a short cache so a phrase ROYAL says often (a greeting,
      "Nothing needs you") is paid for once per process. */
-  const SPEECH_MAX = 1200, SPEECH_CACHE = 64;
+  const SPEECH_MAX = 1200, SPEECH_CACHE = 160;   /* by sentence, so more entries */
   const speechCache = new Map();
   function json(req, status, body) {
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SEC, ...cors(req) } });
@@ -57,7 +57,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
   }
 
   /* ------------------------------------------------ Grok Bot bridge --- */
-  const BOT_PATH = /^\/v1\/bots\/([a-z][a-z0-9_]{0,31})(?:\/(token|message|events|feed|stream|requests\/([0-9a-fA-F-]{36})))?$/;
+  const BOT_PATH = /^\/v1\/bots\/([a-z][a-z0-9_]{0,31})(?:\/(token|message|verify|events|feed|stream|requests\/([0-9a-fA-F-]{36})))?$/;
   const noBridge = (req) => fail(req, 503, "BRIDGE_UNAVAILABLE", "The Grok Bot bridge is not running on this server.");
   const since = (req, url) => url.searchParams.get("since") || req.headers.get("last-event-id") || undefined;
 
@@ -103,6 +103,13 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       const b = await body(req);
       const r = await bridge.sendMessage(id, b, { realm, requestedBy: "tahir" });
       if (r.body.request_id) await audit("BOT_MESSAGE_SENT", "Sent a message to the " + id + " bot (" + (r.body.ok ? "delivered" : r.body.error) + ").", (b && b.realm) || realm);
+      return reply(req, r);
+    }
+    /* A real connection check: a message the bot must answer.  The bot is
+       CONNECTED_VERIFIED only once it posts back with its own token. */
+    if (action === "verify" && req.method === "POST") {
+      const r = await bridge.sendMessage(id, { skill: "connection_check", content: "Connection check from ROYAL. Reply with a result event for this request_id, saying ready. Take no other action." }, { realm, requestedBy: "tahir" });
+      if (r.body.request_id) await audit("BOT_VERIFY_SENT", "Sent a connection check to the " + id + " bot (" + (r.body.ok ? "delivered, waiting for its reply" : r.body.error) + ").", realm);
       return reply(req, r);
     }
     if (action === "events" && req.method === "POST") return fail(req, 403, "BOT_ONLY", "Only the bot itself posts to its events, with its own token.");
@@ -259,16 +266,16 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
         if (!text) return fail(req, 400, "TEXT_REQUIRED", "Nothing to say.");
         if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "I speak at most " + SPEECH_MAX + " characters at a time.");
         const key = royal.provider.voice + "\u0000" + text;
-        let audio = speechCache.get(key);
-        if (audio) { speechCache.delete(key); speechCache.set(key, audio); }
+        let hit = speechCache.get(key);
+        if (hit) { speechCache.delete(key); speechCache.set(key, hit); }
         else {
           const s = await royal.provider.speech({ text });
           if (!s.ok) return json(req, 502, { ok: false, error: s.failed_because, message: "The voice service did not answer" + (s.detail ? ": " + s.detail : ".") });
-          audio = s.audio;
-          speechCache.set(key, audio);
+          hit = { audio: s.audio, type: s.type || "audio/wav" };
+          speechCache.set(key, hit);
           if (speechCache.size > SPEECH_CACHE) speechCache.delete(speechCache.keys().next().value);
         }
-        return new Response(audio, { status: 200, headers: { "Content-Type": "audio/mpeg", "Content-Length": String(audio.length), ...SEC, ...cors(req) } });
+        return new Response(hit.audio, { status: 200, headers: { "Content-Type": hit.type, "Content-Length": String(hit.audio.length), ...SEC, ...cors(req) } });
       }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
@@ -353,7 +360,10 @@ export async function fromEnv(env, { store, providerFactory, extras = {} } = {})
    audit.  It is told never to claim an action happened. */
 export function voiceSessionConfig(voice = "ara") {
   return {
-    voice, turn_detection: { type: "server_vad" },
+    /* Turn detection: xAI's default waits only 200 ms of silence before
+       deciding Tahir has finished, which cuts him off mid-thought; 450 ms
+       still answers quickly.  To be tuned by ear on his phone. */
+    voice, turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 450 },
     audio: { input: { format: { type: "audio/pcm", rate: 24000 } }, output: { format: { type: "audio/pcm", rate: 24000 } } },
     instructions: [
       identityPrompt(),

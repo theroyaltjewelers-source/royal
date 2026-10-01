@@ -16,6 +16,10 @@
    vendor's speech service.  Where recognition is missing, ROYAL says so and
    typing is offered.  Nothing here pretends to have heard anything. */
 
+import { Playback, speechPieces } from "./playback.js";
+
+function decode(ac, buf) { return new Promise((ok, no) => { const p = ac.decodeAudioData(buf, ok, no); if (p && p.then) p.then(ok, no); }); }
+
 export class Voice {
   constructor({ onPartial, onFinal, onState, onLevel, onError, onSpeechBoundary, onSpeaking, audio = () => null } = {}) {
     this.SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -125,47 +129,64 @@ export class Voice {
     return true;
   }
 
-  /* ROYAL's own voice.  The words go to the server, the audio comes back
-     and plays through Web Audio.  Any failure before the first sound hands
-     the same words to the device's voice; an interruption ends quietly. */
+  /* ROYAL's own voice, streamed by sentence.  The reply is split into
+     pieces (the first sentence alone, so the voice starts as soon as one
+     sentence is ready), each piece is fetched while the one before it
+     plays, and every piece goes into one playback queue (web/js/playback.js)
+     that schedules it exactly where the last one ends: no gaps between
+     pieces, no overlap.  A failure before the first sound hands the words
+     to the device's voice; a failure later hands it the words not yet
+     spoken.  An interruption silences everything at once. */
   async _speakServer(text, onEnd) {
     const gen = ++this.gen, ctl = new AbortController();
     this.abort = ctl; this.speaking = true;
-    let ended = false;
-    const finish = () => { if (ended) return; ended = true; if (this.gen === gen) { this.speaking = false; this.src = null; this._speakingNow(false); } cancelAnimationFrame(this._outRaf); onEnd && onEnd(); };
-    const fallback = () => { if (ended) return; ended = true; if (this.gen !== gen) { onEnd && onEnd(); return; } this.speaking = false; this._speakBrowser(text, onEnd); };
-    let buf = null;
-    try { buf = await this.server.fetch(text, ctl.signal); } catch (_) { buf = null; }
-    if (this.gen !== gen) return finish();                    /* stopped while the voice was on its way */
-    if (!buf) return fallback();
+    let ended = false, allQueued = false, played = 0;
+    const finish = () => { if (ended) return; ended = true; if (this.endCurrent === finish) this.endCurrent = null; if (this.gen === gen) { this.speaking = false; this._speakingNow(false); } onEnd && onEnd(); };
+    const handOff = (rest) => { if (ended) return; ended = true; if (this.endCurrent === finish) this.endCurrent = null; if (this.gen !== gen) { onEnd && onEnd(); return; } this.speaking = false; this._speakBrowser(rest, onEnd); };
+    this.endCurrent = finish;
     const ac = this._ctx();
-    if (!ac) return fallback();
-    let audio;
-    try { audio = await new Promise((ok, no) => { const p = ac.decodeAudioData(buf, ok, no); if (p && p.then) p.then(ok, no); }); }
-    catch (_) { return fallback(); }
-    if (this.gen !== gen) return finish();
-    try {
-      const src = ac.createBufferSource(), an = ac.createAnalyser();
-      an.fftSize = 512; src.buffer = audio; src.connect(an); an.connect(ac.destination);
-      src.onended = finish;
-      this.src = src;
-      src.start();
-      this._speakingNow(true);
-      /* Loudness moves the Core, and a rising syllable pulses it, the way
-         word boundaries do for the device voice. */
-      const data = new Uint8Array(an.fftSize); let last = 0;
-      const tick = () => {
-        if (ended || this.gen !== gen) return;
-        an.getByteTimeDomainData(data); let s = 0; for (const v of data) { const x = (v - 128) / 128; s += x * x; }
-        const a = Math.min(1, Math.sqrt(s / data.length) * 4);
+    if (!ac) return handOff(text);
+    const pb = this._playback(ac);
+    pb.begin(typeof performance !== "undefined" ? performance.now() : null);
+    pb.onIdle = () => { if (allQueued && this.gen === gen) finish(); };
+    const pieces = speechPieces(text), got = [];
+    const get = (i) => got[i] || (got[i] = Promise.resolve().then(() => this.server.fetch(pieces[i], ctl.signal)).then((buf) => (buf ? decode(ac, buf) : null)).catch(() => null));
+    for (let i = 0; i < pieces.length; i++) {
+      const now = get(i);
+      if (i + 1 < pieces.length) get(i + 1);                    /* the next piece is fetched while this one plays */
+      const audio = await now;
+      if (this.gen !== gen) return finish();                    /* stopped while the voice was on its way */
+      if (!audio) {
+        const rest = pieces.slice(i).join(" ");
+        if (!played) return handOff(rest);
+        /* Part of it played: the device voice says the rest once the queue drains. */
+        pb.onIdle = () => { if (this.gen === gen) handOff(rest); };
+        if (!pb.playing) handOff(rest);
+        return;
+      }
+      pb.push(audio); played++;
+      if (played === 1) this._speakingNow(true);
+    }
+    allQueued = true; pb.end();
+    if (!pb.playing) finish();
+  }
+
+  _playback(ac) {
+    if (!this.pb || this.pb.ctx !== ac) {
+      let last = 0;
+      this.pb = new Playback(ac, { onLevel: (a) => {
+        /* Loudness moves the Core, and a rising syllable pulses it, the way
+           word boundaries do for the device voice. */
         this.cb.onLevel && this.cb.onLevel(a);
         if (a - last > 0.18) this.cb.onSpeechBoundary && this.cb.onSpeechBoundary();
         last = a;
-        this._outRaf = requestAnimationFrame(tick);
-      };
-      tick();
-    } catch (_) { return fallback(); }
+      } });
+    }
+    return this.pb;
   }
+
+  /* How the voice is doing: first-audio times and gaps, for the Systems view. */
+  get stats() { return this.pb ? this.pb.stats : null; }
 
   /* The page's AudioContext (unlocked by the first touch), or one of our own. */
   _ctx() {
@@ -179,10 +200,11 @@ export class Voice {
   stopSpeaking() {
     this.gen++;
     if (this.abort) { try { this.abort.abort(); } catch (_) {} this.abort = null; }
-    if (this.src) { const s = this.src; this.src = null; try { s.stop(); } catch (_) {} }
-    cancelAnimationFrame(this._outRaf);
+    if (this.pb) this.pb.stop();
+    const f = this.endCurrent; this.endCurrent = null;
     if (this.canSpeak && (this.speaking || speechSynthesis.speaking)) speechSynthesis.cancel();
     this.speaking = false; this._speakingNow(false);
+    if (f) f();
   }
   _speakingNow(on) { if (this._sp === on) return; this._sp = on; this.cb.onSpeaking && this.cb.onSpeaking(on); }
 }
