@@ -102,8 +102,16 @@ export class RealtimeVoice {
     if (e.name !== "ask_royal" || !args.request) output = { say: "I couldn't use that tool." };
     else {
       this._state("thinking");
-      const r = await this.ask(String(args.request).slice(0, 2000));
-      output = r ? { say: (r.presentation && r.presentation.speech) || r.summary, status: r.status, needs_approval: !!(r.presentation && r.presentation.surfaces.some((p) => p.type === "DECISION_OBJECT" && p.data.status === "OPEN")),
+      /* The voice never waits forever: after 25 seconds it says the answer
+         will come on screen, and the work carries on (the stage shows it). */
+      const pending = this.ask(String(args.request).slice(0, 2000));
+      let lateTimer = null;
+      const late = new Promise((ok) => { lateTimer = setTimeout(() => ok("LATE"), 25000); });
+      const r0 = await Promise.race([pending, late]);
+      clearTimeout(lateTimer);
+      if (r0 === "LATE") { output = { say: "That's taking a moment. I'll put it on your screen when it's ready.", status: "WAITING" }; }
+      const r = r0 === "LATE" ? null : r0;
+      if (r0 !== "LATE") output = r ? { say: (r.presentation && r.presentation.speech) || r.summary, status: r.status, needs_approval: !!(r.presentation && r.presentation.surfaces.some((p) => p.type === "DECISION_OBJECT" && p.data.status === "OPEN")),
         note: "Approvals happen on screen. Do not say anything was sent or done unless 'say' says so." } : { say: "I couldn't check that just now." };
     }
     if (!this.ws || this.ws.readyState !== 1) return;

@@ -115,3 +115,11 @@
 **Tradeoffs.** Low effort can be less thorough on a hard question routed as a simple one; the reasoning router raises the level for why, trade-off and planning language. Fetching by sentence makes more, smaller voice requests (cached per sentence). The fast path's sentences are fixed patterns; anything else still reaches the model.
 **Proved.** `tests/correction.test.js`, `tests/voice.test.js`, `tests/grokbot.test.js` (round-trip status); the benchmark against a simulated xAI: 24 model calls to 12 for the benchmark set, greeting 1,414 ms to 10 ms, open question 1,410 ms to 708 ms.
 **Reversibility.** High. Each part is local to its module; `ROYAL_FLAGS={"spoken_voice":false}` returns the device voices.
+
+## ADR-016. ROYAL knows its team's work from its own records
+
+**Decision.** Questions about what the specialists and bots did are answered from ROYAL's own records: an agent activity ledger (`core/agent_ledger.js`) written on every native specialist run, the delegated AgentTasks, and each Grok Bot's feed, read agent by agent so one failure never hides the rest. Delegated work is cancelled only when Tahir names it, and every cancellation and failure carries a reason. Every skill that depends on a specialist names it and its reason when it is missing instead of crashing or showing zeros. The page numbers its turns so a new question is never dropped. A curated executive knowledge fabric (`docs/knowledge/`) answers business concepts below House documents; current law and tax are researched live. The calculator's data is checked against itself and conflicts are reported.
+**Why.** "Tell me what each Bot did for work today" was sent to web research, and around it a bare "stop" cancelled all delegated work, a second question was dropped, the voice could wait forever and one failed specialist could crash an answer (`ROYAL_MULTI_AGENT_BUG_AUDIT.md`).
+**Tradeoffs.** One ledger write per specialist per request (compare-and-swap with retry). Bot self-reports stay unverified until a cross-check exists. The reference is ROYAL's own text and should be reviewed by Tahir before it guides policy.
+**Proved.** `tests/multiagent.test.js` (13, including a 20-request stress run), `tests/knowledge_fabric.test.js` (6), the bot health test, and a Chromium check of concurrent turns.
+**Reversibility.** High; each part is its own module.

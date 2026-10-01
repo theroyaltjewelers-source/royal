@@ -183,3 +183,47 @@ test("diagnose yourself: each system with its real state and evidence; an unveri
   assert.match(a.summary, /Failed: Grok Bot: House \(failed/);
   assert.equal(a.status, "PARTIAL");
 });
+
+/* ---------------------------------------------------------- stress --- */
+
+test("stress: 20 mixed requests at once, with a timeout, a malformed result and a failing bot: every turn answers, no cross-talk", async () => {
+  const saved = { grace: SPECIALISTS.grace, ace: SPECIALISTS.ace };
+  let n = 0;
+  SPECIALISTS.grace = (ctx) => (++n % 3 === 0 ? new Promise(() => {}) : saved.grace(ctx));   /* every third GRACE run never answers */
+  SPECIALISTS.ace = async () => ({ not: "an agent result" });                                 /* ACE returns something malformed */
+  try {
+    const r = await royalWith({ bridge: fakeBridge(), delegationTimeoutMs: 80 });
+    const qs = ["What needs me?", "What did the bots do today?", "What did ACE do today?", "Who owes us money?", "What's happening with production?",
+      "Which clients are at risk?", "State of the House", "Diagnose yourself", "What are you working on?", "Why have we been tight on cash?",
+      "Stop.", "Hey ROYAL", "Who are you?", "What does production deposit mean?", "What did GRACE do today?", "Any leads in the pipeline?",
+      "What are we waiting on?", "Which promises are due?", "Show me revenue leakage.", "Tell me what each Bot did for work today."];
+    const results = await Promise.allSettled(qs.map((q, i) => r.handle({ content: q, conversation_id: "conv-" + i })));
+    assert.equal(results.filter((x) => x.status === "rejected").length, 0, "no turn throws");
+    const vals = results.map((x) => x.value);
+    assert.equal(new Set(vals.map((v) => v.run_id)).size, qs.length, "every turn has its own run id");
+    vals.forEach((v, i) => {
+      assert.ok(v.summary && v.summary.length > 3, qs[i] + ": an answer, not a blank");
+      assert.notEqual(v.status, "FAILED", qs[i] + ": " + v.summary);
+      assert.ok(v.timing && v.timing.path, qs[i]);
+    });
+    const ace = vals[0].delegations.find((d) => d.agent === "ace");
+    assert.equal(ace.verified, false, "the malformed result was not used");
+    const day = await r.ledger.day("ace", dayOf(NOW));
+    assert.ok(day.failed >= 1 && day.recent.some((x) => x.reason === "INVALID_RESULT"));
+    const gday = await r.ledger.day("grace", dayOf(NOW));
+    assert.ok(gday.timed_out >= 1, "GRACE's stalls are recorded as timeouts, not failures of the whole turn");
+    assert.equal(gday.runs, gday.ok + gday.timed_out + gday.failed + gday.not_connected, "every GRACE run is accounted for");
+  } finally { SPECIALISTS.grace = saved.grace; SPECIALISTS.ace = saved.ace; }
+});
+
+test("a skill whose specialist failed says which and why, instead of crashing the turn or showing zeros", async () => {
+  const saved = SPECIALISTS.ace;
+  SPECIALISTS.ace = async () => ({ not: "an agent result" });
+  try {
+    const r = await royalWith();
+    const a = await ask(r, "Any leads in the pipeline?");
+    assert.equal(a.status, "PARTIAL");
+    assert.match(a.summary, /^ACE returned something I couldn't use, so I can't give you that answer right now without guessing/);
+    assert.ok(!/\$0|0 leads/.test(a.summary), "no zeros standing in for missing data");
+  } finally { SPECIALISTS.ace = saved; }
+});

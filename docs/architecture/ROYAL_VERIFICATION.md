@@ -15,3 +15,7 @@
 (f) **Connections:** a Grok Bot is CONNECTED_VERIFIED only after a real round trip; the calculator is CONNECTED only while snapshots arrive; "who are you" names only what is connected now.
 
 (g) **Speech:** ROYAL never says something worked before the record says so; the realtime voice is instructed the same way and speaks only ROYAL's line.
+
+(h) **Agent work:** what ROYAL ran itself (native specialists) is recorded as it happened. A Grok Bot's report of its own work is REPORTED until ROYAL can check it against a record, a tool result or the source system; cross-checking bot reports is not built yet, so the daily review always marks them unverified.
+
+(i) **Data:** where the calculator states one fact twice and the two disagree, ROYAL reports the conflict and does not choose (`ROYAL_SYSTEM_CONGRUENCE.md`).

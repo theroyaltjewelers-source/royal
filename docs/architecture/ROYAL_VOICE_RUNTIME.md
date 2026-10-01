@@ -27,3 +27,7 @@ Speaking (realtime), touching the Core, typing or Escape stops ROYAL: every queu
 ## 4. Spoken and shown
 
 `presentation.speech` is what is said; the screen keeps the full answer. A long answer is spoken as its first sentence or two plus "The rest is on your screen."
+
+## 5. Update, 1 October 2026
+
+Realtime voice waits at most 25 seconds for ROYAL's answer to a tool call; past that it says "That's taking a moment. I'll put it on your screen when it's ready." and the answer still appears on the stage when it arrives. Voice turns and typed turns are numbered on the page, so a new question is never dropped while an earlier one runs.

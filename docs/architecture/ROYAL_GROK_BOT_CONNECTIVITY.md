@@ -35,3 +35,7 @@ In the menu, open Bots, choose the bot, and press "Check connection". ROYAL send
 ## 5. Known limitations
 
 (a) The intelligence status line and the gateway's `grokbots` adapter still report the bridge as connected whenever it exists (`SECURITY_MODEL.md` 7(g)); the per-bot `connection` is the truth. (b) Delegation still attempts a configured but unverified bot; its reply is what verifies it.
+
+## 6. Update, 1 October 2026
+
+Two more states: AUTH_FAILED (the bot's webhook refused ROYAL's key) and UNRESPONSIVE (delivered more than 15 minutes ago, no word back). Full model: `ROYAL_BOT_HEALTH_MODEL.md`. The daily activity review reads each bot's feed on its own, so one unreadable feed is named and the others are still reported. Round trips with the real bots have still not been run from this environment: there are no bot webhooks here.

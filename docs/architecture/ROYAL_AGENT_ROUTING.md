@@ -21,3 +21,13 @@
 ## 3. Why this split
 
 Speed: native specialists answer in milliseconds; a Grok Bot round trip is a webhook plus whenever the bot replies. Durable bot environments are kept for work that needs them (long-running, browser or app work).
+
+## 4. Update, 1 October 2026
+
+(a) **Questions about the team** ("what did each bot do today", "what did ACE do", "what are you working on", "diagnose yourself") are answered from ROYAL's records (`teamRoute()` in `core/router.js`), never by searching the web and never by asking the bots to vouch for themselves.
+
+(b) **HOUSE** has no native runtime; a native consult reports it NOT_CONNECTED with that reason instead of throwing.
+
+(c) **No delegation into a broken bot:** a bot whose connection is AUTH_FAILED or FAILED is not sent work; ROYAL says why.
+
+(d) Orchestration details: `ROYAL_AGENT_ORCHESTRATOR.md`.

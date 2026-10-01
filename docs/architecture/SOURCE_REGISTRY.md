@@ -80,3 +80,7 @@ All five need `XAI_API_KEY` and `ROYAL_GROK_MODEL`. Professional contact beyond 
 ## 4. Adapters with no source
 
 `defaultGateway` registers six adapters that exist only so the planner and permission engine know about them. Each reports `NOT_CONNECTED` with "No adapter yet": `crm`, `calendar`, `gold_buy`, `quickbooks`, `jewel360`, `instagram`. Any registry domain whose fallback or authority points at one of these is NOT CONNECTED for that path.
+
+## Update, 1 October 2026
+
+**ROYAL curated reference** (`docs/knowledge/`): source_type curated_reference, authority below House documents and live House data, freshness stable concepts; never a source for current law, tax, regulation, prices or House state. **Agent activity ledger** (`agent_day`, `agent_tasks`): ROYAL's own record of specialist work, VERIFIED_INTERNAL for what ROYAL ran; Grok Bot posts remain REPORTED_UNVERIFIED.

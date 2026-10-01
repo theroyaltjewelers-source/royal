@@ -35,6 +35,18 @@ async function gather(ctx, agents) {
   return { results, findings };
 }
 
+/* A specialist this answer depends on didn't finish (timed out, failed,
+   returned something invalid).  Say which and why, and keep the turn: never
+   fill the gap with zeros or empty lists, which would read as facts. */
+const WHY = { TIMEOUT: "didn't finish in time", INVALID_RESULT: "returned something I couldn't use", ERROR: "hit an error", NOT_CONNECTED: "isn't connected" };
+function unavailable(results, needs) {
+  const down = needs.filter((a) => results[a] && results[a].status !== RUN_STATUS.NOT_CONNECTED && !results[a].data);
+  if (!down.length) return null;
+  const why = (a) => { const s = String(results[a].summary || ""); return /in time/.test(s) ? WHY.TIMEOUT : /invalid/.test(s) ? WHY.INVALID_RESULT : WHY.ERROR; };
+  return { status: RUN_STATUS.PARTIAL, summary: down.map((a) => a.toUpperCase() + " " + why(a)).join(", and ") + ", so I can't give you that answer right now without guessing. Asking again usually works; the rest of what I know is unchanged.",
+    findings: needs.filter((a) => results[a] && results[a].data).flatMap((a) => results[a].findings || []), surface: { type: "text" } };
+}
+
 function notConnected(results) {
   return Object.values(results).some((r) => r.status === RUN_STATUS.NOT_CONNECTED);
 }
@@ -62,6 +74,7 @@ function skill(m, run) { SKILLS[m.id] = { ...m, run }; }
    specialists as every other answer; nothing here is decorative. */
 skill(meta("home_status", "Home Status", ALL, { purpose: "The command screen: House status, systems, and the three counts." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const ds = await openDecisions(ctx);
   const domains = ctx.domains.filter((d) => d.realm === "BUSINESS");
   const provider = ctx.provider.status();
@@ -86,6 +99,7 @@ skill(meta("home_status", "Home Status", ALL, { purpose: "The command screen: Ho
    state; nothing is decorative.  When something cannot be seen, it says so. */
 skill(meta("command_center", "Command Center", ALL, { purpose: "The home screen: House status, systems, and the three numbers that matter." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const dsRaw = await openDecisions(ctx);
   const calc = await ctx.connector.status(ctx.now);
   const prov = ctx.provider.status();
@@ -152,6 +166,7 @@ skill(meta("can_i_step_away", "Can I Step Away?", ALL, { purpose: "Whether Tahir
 skill(meta("state_of_house", "State of the House", ALL, { purpose: "One synthesised picture of the business, not a database dump." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ledger", "grace", "ace"]); if (miss) return miss; }
   const ds = await openDecisions(ctx);
   const ex = executive(findings);
   const urgent = ex.filter((i) => i.priority === P.P0 || i.priority === P.P1);
@@ -173,6 +188,7 @@ skill(meta("state_of_house", "State of the House", ALL, { purpose: "One synthesi
 /* --------------------------------------------------- morning briefing --- */
 skill(meta("morning_briefing", "Morning Briefing", ALL, { purpose: "The structured executive briefing. Empty sections are left out." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["grace", "ledger"]); if (miss) return miss; }
   const dsRaw = await openDecisions(ctx);
   if (notConnected(results)) {
     const c = calcDown(ctx);
@@ -225,6 +241,7 @@ function waitItem(w) {
 skill(meta("who_owes_us", "Cash Arrival Review", ["ledger"], { purpose: "Who owes the House, ordered by what matters.", sources: ["RECEIVABLE", "PAYMENT"] }), async (ctx) => {
   const { results } = await gather(ctx, ["ledger"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const L = results.ledger.data;
   const items = L.debtors.map((d) => ({ id: "rcv_" + d.entity.id, kind: "RECEIVABLE", title: d.entity.client_name + ": " + money(d.outstanding),
     detail: d.entity.name + ", at " + d.stage + (d.finished ? ". The piece is finished." : "."), entity: d.entity, amount: d.outstanding,
@@ -238,6 +255,7 @@ skill(meta("who_owes_us", "Cash Arrival Review", ["ledger"], { purpose: "Who owe
 skill(meta("waiting_for", "Waiting-For Audit", ["grace"], { purpose: "Every structured dependency, with how long and who owns it." }), async (ctx) => {
   const { results } = await gather(ctx, ["grace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const stored = (await ctx.store.list("waiting")).map((r) => r.data).filter((w) => !w.resolved_at);
   const items = results.grace.data.waiting.map(waitItem).concat(stored.map((w) => ({ id: w.id, kind: "WAITING", title: "Waiting on " + w.waiting_for_entity, detail: w.reason || "", priority: P.P3, risk: R.GREEN, need: N.MONITOR, owner: w.owner, evidence: { label: E.REPORTED_UNVERIFIED, source: "royal.store" } }))).sort(byAttention);
   const over = items.filter((i) => i.need === N.DELEGATE).length;
@@ -249,6 +267,7 @@ skill(meta("waiting_for", "Waiting-For Audit", ["grace"], { purpose: "Every stru
 skill(meta("commitments", "Commitment Audit", ["grace"], { purpose: "What the House has promised, and what is due or overdue.", sources: ["COMMITMENT"] }), async (ctx) => {
   const { results } = await gather(ctx, ["grace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const stored = (await ctx.store.list("commitments")).map((r) => r.data);
   const all = results.grace.data.commitments.concat(stored);
   const live = all.filter((c) => [CS.OPEN, CS.DUE_SOON, CS.OVERDUE].indexOf(c.status) >= 0).sort((a, b) => (a.due_at || Infinity) - (b.due_at || Infinity));
@@ -266,6 +285,7 @@ skill(meta("commitments", "Commitment Audit", ["grace"], { purpose: "What the Ho
 skill(meta("production_status", "Production Risk Audit", ["grace", "ledger"], { purpose: "Production state, exceptions first." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ["grace", "ledger"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const ex = executive(findings).filter((i) => i.agent === "grace" || /PRODUCTION/.test(i.code || ""));
   const prod = results.grace.data.in_production;
   const healthy = prod.filter((p) => !ex.some((i) => i.entity && i.entity.id === p.id));
@@ -298,12 +318,14 @@ skill(meta("revenue_leakage", "Revenue Leakage Review", ["ledger"], { purpose: "
 skill(meta("sales_pipeline", "Sales Pipeline", ["ace"], { purpose: "Open leads and what is stalled." }), async (ctx) => {
   const { results } = await gather(ctx, ["ace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ace"]); if (miss) return miss; }
   return { summary: results.ace.summary, findings: results.ace.findings, surface: { type: "pipeline", leads: results.ace.data.pipeline, items: results.ace.findings } };
 });
 
 /* ----------------------------------------------------- system status --- */
 skill(meta("system_status", "System Status", ["forge"], { purpose: "Connections, freshness and integrity.", sources: ["SOFTWARE_STATUS"] }), async (ctx) => {
   const { results } = await gather(ctx, ["forge"]);
+  { const miss = unavailable(results, ["forge"]); if (miss) return miss; }
   return { summary: results.forge.summary + " Language provider: " + (ctx.provider.status().status === "CONNECTED" ? "connected." : "not connected."),
     findings: results.forge.findings, surface: { type: "systems", calculator: results.forge.data.calculator, provider: ctx.provider.status(), domains: ctx.domains, items: results.forge.findings } };
 });
@@ -332,6 +354,7 @@ skill(meta("project_status", "Project Status", ["grace", "ledger", "ace"], { pur
   if (!p) return { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "Which commission do you mean?", findings: [], surface: { type: "clarify", candidates: [] } };
   const { results, findings } = await gather(ctx, ["grace", "ledger", "ace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const mine = findings.filter((i) => i.entity && i.entity.id === p.id).sort(byAttention);
   const waiting = results.grace.data.waiting.filter((w) => w.project_id === p.id);
   const cmts = results.grace.data.commitments.filter((c) => c.project_id === p.id);

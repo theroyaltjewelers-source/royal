@@ -100,3 +100,7 @@ The composer (`core/composer.js`, case `knowledge`) turns this into a `KNOWLEDGE
 ## 9. Other callers
 
 `doOutreach` and `doProspecting` in `core/intelligence/index.js` search the engine for the House's offer with `includeTraining: false` and pass the passages to the model as data. The `POLICY` domain in `core/sources.js` names `royal.knowledge` as its adapter.
+
+## Update, 1 October 2026
+
+A sixth namespace, `fabric`, holds the executive knowledge fabric (`docs/knowledge/`, ingested with the rest). It scores at 0.6 of House documents, is excluded from House policy and offer searches, keeps each document's metadata off the index, and matches query phrases ("opportunity cost") within the reference only. Abbreviations are expanded before matching (A/R, A/P, COGS, P&L, ROI, ROAS). See `ROYAL_EXECUTIVE_KNOWLEDGE_FABRIC.md`.

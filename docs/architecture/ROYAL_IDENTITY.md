@@ -27,3 +27,7 @@
 ## 3. Tests
 
 `tests/correction.test.js`: no answer across 13 questions, with and without a calculator and a provider, calls itself ROYAL in the third person; the identity answer reflects connections; every prompt starts with the identity; the voice session uses it.
+
+## 4. Update, 1 October 2026
+
+ROYAL's own reports are in the first person too: "I checked today's record for all five", "I checked 11 parts of myself", "I couldn't read GRACE's feed". A specialist's or bot's own words are never shown raw: bot posts are stripped of markdown and links, quoted briefly, and marked as their report, not verified.

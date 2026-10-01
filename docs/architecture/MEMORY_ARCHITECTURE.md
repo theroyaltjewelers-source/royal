@@ -106,3 +106,7 @@ It holds claims with labels, sources and retrieval times. It is never promoted t
 ## 6. Not built
 
 A correction store, preference memory beyond server configuration (`ROYAL_OWNER_IDS`, `ROYAL_TZ_OFFSET_MIN`), personal-realm memory, and conversation memory shared across instances are NOT IMPLEMENTED.
+
+## 7. Update, 1 October 2026
+
+Two store kinds for agent work: `agent_day` (per specialist, per House day: runs and outcomes, `core/agent_ledger.js`) and `agent_tasks` (delegated work, now updated with compare-and-swap retry and with cancel and fail reasons). Both are durable with `DATABASE_URL`. "Today" is the America/New_York day everywhere.
