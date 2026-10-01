@@ -16,7 +16,7 @@ import { intelligenceFromEnv } from "./intelligence-env.js";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon" };
+  ".svg": "image/svg+xml", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8" };
 
 /* iOS asks for these by name when ROYAL is added to the home screen. */
 const ALIAS = { "/": "/index.html", "/apple-touch-icon-precomposed.png": "/apple-touch-icon.png", "/favicon.ico": "/apple-touch-icon.png" };
