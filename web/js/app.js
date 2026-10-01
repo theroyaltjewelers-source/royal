@@ -180,7 +180,6 @@ async function speechFor(text, signal) {
   return r.ok ? r.arrayBuffer() : null;
 }
 async function askFromVoice(text) {
-  for (let i = 0; i < 40 && busy; i++) await wait(250);
   return submit(text, "voice", { speak: false });
 }
 
@@ -320,9 +319,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ------------------------------------------------------------ submit --- */
-let busy = false;
+/* Turns.  A new question always goes through: it used to be dropped while
+   an earlier one was still running ("if (busy) return"), so "while ACE does
+   that, what needs me?" vanished.  Each question is a numbered turn; the
+   server answers every one, and only the newest is drawn on the stage.  An
+   older answer that arrives late is still recorded by ROYAL (and returned to
+   the realtime voice when it asked), but never overwrites the newer one. */
+let busy = 0, turn = 0;
 async function submit(text, modality, { speak = true } = {}) {
-  if (busy) return; busy = true;
+  const my = ++turn; busy++;
   voice.stopSpeaking(); voice.cancel(); sound.unlock();
   stage.setHeard(text); bump();
   if (!STATES[state.state] || state.state === "OFFLINE") state.go("AWAKE");
@@ -331,7 +336,8 @@ async function submit(text, modality, { speak = true } = {}) {
   await wait(260);
   state.go("THINKING");
   const r = await req;
-  busy = false;
+  busy = Math.max(0, busy - 1);
+  if (my !== turn) return r.ok ? r.result : null;   /* superseded on screen by a newer question */
   if (!r.ok) {
     if (r.unauthorized) { store.set("royal.session", null); TOKEN = null; state.go("OFFLINE"); return showSignIn("Your session ended. Sign in again."); }
     state.go("FAILURE", "request failed"); sound.play("failure");

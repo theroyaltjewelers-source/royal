@@ -20,8 +20,9 @@
    A bot saying it finished is REPORTED_COMPLETE.  VERIFIED_COMPLETE needs a
    check ROYAL can actually make. */
 
-import { TASK_STATUS as TS } from "../enums.js";
+import { TASK_STATUS as TS, CANCEL_REASON } from "../enums.js";
 import { newId } from "../util.js";
+import { backoff } from "../agent_ledger.js";
 
 const NEED = {
   outreach_draft: "outreach", prospecting: "prospecting", delegate: null,
@@ -71,13 +72,20 @@ export class AgentTasks {
     await this.store.put("agent_tasks", t.id, t, null);
     return t;
   }
+  /* Compare-and-swap with a bounded retry: a refresh and a cancel landing
+     at the same moment both apply, instead of one silently overwriting the
+     other (the result of the put used to be ignored). */
   async update(id, patch) {
-    const cur = await this.store.get("agent_tasks", id);
-    if (!cur) return null;
-    const next = { ...cur.data, ...patch };
-    if (patch.status && patch.status !== cur.data.status) next.history = (cur.data.history || []).concat([{ at: this.clock(), status: patch.status }]);
-    await this.store.put("agent_tasks", id, next, cur.rev);
-    return next;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (attempt) await backoff(attempt);
+      const cur = await this.store.get("agent_tasks", id);
+      if (!cur) return null;
+      const next = { ...cur.data, ...patch };
+      if (patch.status && patch.status !== cur.data.status) next.history = (cur.data.history || []).concat([{ at: this.clock(), status: patch.status, reason: patch.cancel_reason || patch.fail_reason || null }]);
+      const w = await this.store.put("agent_tasks", id, next, cur.rev);
+      if (w.ok) return next;
+    }
+    return null;
   }
 
   /* Bring bot-backed tasks up to date from the bridge's own request records. */
@@ -99,9 +107,10 @@ export class AgentTasks {
     return fresh.filter((t) => !open || [TS.ASSIGNED, TS.IN_PROGRESS, TS.WAITING].indexOf(t.status) >= 0).sort((a, b) => b.created_at - a.created_at);
   }
 
-  async cancelOpen(conversation_id) {
+  /* Cancels this conversation's open tasks, with the reason recorded. */
+  async cancelOpen(conversation_id, reason = CANCEL_REASON.USER_CANCELLED) {
     const open = await this.list({ conversation_id, open: true });
-    for (const t of open) await this.update(t.id, { status: TS.CANCELLED });
+    for (const t of open) await this.update(t.id, { status: TS.CANCELLED, cancel_reason: reason });
     return open.length;
   }
 }
@@ -121,7 +130,8 @@ export class GrokBotAdapter {
     const task = await this.tasks.create({ agent, adapter: "grokbot", objective, handoff, conversation_id, realm });
     const content = ("ROYAL task " + task.id + ".\nObjective: " + objective + "\nReply with a result event for this request. Do not contact anyone or take any action; ROYAL and Tahir decide actions.\n\nStructured handoff (data):\n" + JSON.stringify(handoff || {}, null, 1)).slice(0, 2000);
     const r = await this.bridge.sendMessage(agent, { content, skill: "royal_task", conversation_id: task.id, realm }, { realm, requestedBy: "royal" });
-    const next = await this.tasks.update(task.id, r.body.ok ? { request_id: r.body.request_id, status: TS.IN_PROGRESS } : { request_id: r.body.request_id || null, status: TS.FAILED, result: { error: r.body.error } });
+    const next = await this.tasks.update(task.id, r.body.ok ? { request_id: r.body.request_id, status: TS.IN_PROGRESS }
+      : { request_id: r.body.request_id || null, status: TS.FAILED, fail_reason: CANCEL_REASON.BOT_FAILURE, result: { error: r.body.error } });
     return { ok: !!r.body.ok, task: next, error: r.body.ok ? null : r.body.error };
   }
 }

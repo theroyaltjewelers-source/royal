@@ -24,6 +24,7 @@ import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM } fro
 import { newId, clone, stableHash } from "./util.js";
 import { runTraced, mark, setPath, timingOf } from "./trace.js";
 import { systemPrompt, fastPath, describeSelf, greetingLine } from "./identity.js";
+import { AgentActivityLedger, dayOf } from "./agent_ledger.js";
 import { RoyalTConnector } from "../realms/business/royal-t/connector.js";
 import { SPECIALISTS, DEFAULT_OWNERS } from "../realms/business/royal-t/specialists.js";
 import { diffSnapshots } from "../realms/business/royal-t/changes.js";
@@ -50,7 +51,7 @@ export function normalizeCommand(input) {
 }
 
 export function createRoyal({ store, provider = new UnavailableProvider(), flags = {}, clock = () => Date.now(), owners = DEFAULT_OWNERS, messenger = null, tzOffsetMin = -240,
-  knowledge = null, fetcher = null, hunter = null, apollo = null, email = null, bridge = null, metrics = null } = {}) {
+  knowledge = null, fetcher = null, hunter = null, apollo = null, email = null, bridge = null, metrics = null, delegationTimeoutMs = DELEGATION_TIMEOUT_MS } = {}) {
   if (!store) throw new Error("ROYAL_CONFIG: a store is required");
   const F = { ...DEFAULT_FLAGS, ...flags };
   const registry = new AgentRegistry();
@@ -61,6 +62,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   const connector = new RoyalTConnector({ store, audit, health, clock, tzOffsetMin });
   const events = new EventBus({ store, audit, clock });
   const conversations = new ConversationContext(6 * 3600000, clock);
+  const ledger = new AgentActivityLedger({ store, clock });
 
   /* ------------------------------------------------------------ tools --- */
   const tools = new Map(Object.entries(connector.tools()));
@@ -121,32 +123,47 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   /* ------------------------------------------------------ delegation --- */
   function makeCtx(base) {
     const delegations = [];
+    /* This request's ledger writes; awaited before its answer is returned, so
+       the record is complete, but never allowed to fail it. */
+    const ledgerWrites = [];
     const ctx = {
-      ...base, owners, decisions, connector, gate, store, provider, health, domains: domainState(), delegations, registry, flags: F, messenger,
+      ...base, owners, decisions, connector, gate, store, provider, health, domains: domainState(), delegations, registry, flags: F, messenger, ledgerWrites,
+      ledger, tasks: intelligence.tasks, bridge, diagnostics,
       read: async (agentId, tool, args = {}) => {
         const r = await gate.request({ agentId, tool, args, domain: "royal_t", run_id: base.run_id });
         if (r.status === "OK") return r.output;
         return { ok: false, failed_because: r.failed_because || r.reason || r.status, impact: r.impact || "No data from " + tool + " was used." };
       },
+      /* Fan-out, fault-isolated: each specialist runs on its own, against its
+         own deadline, and ends on its own with a status and a reason
+         (TIMEOUT, ERROR, INVALID_RESULT, NOT_CONNECTED).  One that fails
+         never takes the others with it, and every run is written to the
+         agent activity ledger (core/agent_ledger.js). */
       consult: async (agentIds) => {
         const out = {};
-        await Promise.all(agentIds.map(async (id) => {
+        await Promise.allSettled(agentIds.map(async (id) => {
           const d = { agent: id, objective: base.skill, context: { entity: base.entity ? base.entity.id : null }, required_output: "AgentResult",
-            deadline_ms: DELEGATION_TIMEOUT_MS, constraints: ["read only"], approval_boundary: "no consequential action",
-            verification_requirement: "every finding labelled, VERIFIED findings cite a source", started_at: clock() };
-          let r;
+            deadline_ms: delegationTimeoutMs, constraints: ["read only"], approval_boundary: "no consequential action",
+            verification_requirement: "every finding labelled, VERIFIED findings cite a source", started_at: clock(), handoff_id: base.run_id + ":" + id };
+          let r, timer = null;
+          const t0 = Date.now();
           try {
+            if (typeof SPECIALISTS[id] !== "function") throw Object.assign(new Error(id.toUpperCase() + " has no native runtime"), { reason: "NOT_CONNECTED" });
             r = await Promise.race([SPECIALISTS[id]({ ...ctx, run_id: base.run_id }),
-              new Promise((_, rej) => setTimeout(() => rej(new Error("DELEGATION_TIMEOUT")), DELEGATION_TIMEOUT_MS))]);
+              new Promise((_, rej) => { timer = setTimeout(() => rej(Object.assign(new Error("DELEGATION_TIMEOUT"), { reason: "TIMEOUT" })), delegationTimeoutMs); })]);
             const v = validateResult(r);
-            if (!v.ok) { d.verified = false; d.errors = v.errors; r = agentResult({ agent: id, run_id: base.run_id, status: RUN_STATUS.FAILED, summary: id.toUpperCase() + " returned an invalid result and was not used." }); }
+            if (!v.ok) { d.verified = false; d.reason = "INVALID_RESULT"; d.errors = v.errors; r = agentResult({ agent: id, run_id: base.run_id, status: RUN_STATUS.FAILED, summary: id.toUpperCase() + " returned an invalid result, so I didn't use it." }); }
             else d.verified = true;
           } catch (e) {
-            d.verified = false; d.errors = [String(e.message || e)];
-            r = agentResult({ agent: id, run_id: base.run_id, status: RUN_STATUS.FAILED, summary: id.toUpperCase() + " did not finish: " + (e.message || e) + ". Nothing it would have found is shown." });
-          }
+            d.verified = false; d.reason = e.reason || "ERROR"; d.errors = [String(e.message || e)];
+            r = agentResult({ agent: id, run_id: base.run_id, status: d.reason === "NOT_CONNECTED" ? RUN_STATUS.NOT_CONNECTED : RUN_STATUS.FAILED,
+              summary: d.reason === "TIMEOUT" ? id.toUpperCase() + " didn't finish in time, so nothing it would have found is shown."
+                : id.toUpperCase() + " didn't finish (" + (e.message || e) + "). Nothing it would have found is shown." });
+          } finally { clearTimeout(timer); }
           d.status = r.status; d.finished_at = clock();
           delegations.push(d); out[id] = r;
+          ledgerWrites.push(ledger.noteRun({ agent: id, skill: base.skill, status: r.status, reason: d.reason || null, findings: (r.findings || []).length,
+            run_id: base.run_id, ms: Date.now() - t0, error: d.errors && d.errors[0] }).catch(() => null));
         }));
         return out;
       },
@@ -205,6 +222,44 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     return { status: RUN_STATUS.OK, summary: p.value.answer.slice(0, 2000), findings: [],
       surface: { type: "text", label: based.length ? EVIDENCE.INFERENCE : EVIDENCE.UNKNOWN, based_on: facts.filter((f) => based.indexOf(f.id) >= 0),
         unknowns: (p.value.unknowns || []).slice(0, 6).map(String), proposals } };
+  }
+
+  /* Self-diagnosis: every part of ROYAL, each with its state and the
+     evidence for it.  Nothing is reported working because it is configured;
+     each line says what was actually observed.  Each check is isolated, so
+     one that throws is reported as FAILED and the rest still run. */
+  async function diagnostics() {
+    const H = "HEALTHY", D = "DEGRADED", X = "FAILED", N = "NOT_CONFIGURED";
+    const checks = {
+      "Language provider": () => { const s = provider.status(); return { state: s.status === "CONNECTED" ? H : s.status === "DEGRADED" ? D : N, evidence: s.status === "CONNECTED" ? (s.model + (s.last_ok_at ? ", last answered " + Math.round((clock() - s.last_ok_at) / 60000) + " min ago" : ", not used yet")) : s.detail }; },
+      "Project Calculator": async () => { const s = await connector.status(clock()); return { state: !s.connected ? N : s.freshness === "STALE" || s.freshness === "EXPIRED" ? D : H, evidence: s.connected ? "last snapshot " + s.age + (s.partial ? ", partial" : "") : "no snapshot has reached me" }; },
+      "Memory": () => ({ state: store.durable ? H : D, evidence: store.durable ? "durable store" : "in memory; lost on restart" }),
+      "House knowledge": () => { const k = intelligence.status().knowledge; return { state: k.status === "CONNECTED" ? (k.passages ? H : D) : N, evidence: k.status === "CONNECTED" ? k.documents + " documents, " + k.passages + " passages" : "not loaded" }; },
+      "Web research": () => { const r = intelligence.research.status(); return { state: r.status === "CONNECTED" ? H : r.status === "DISABLED" ? N : N, evidence: r.detail || r.status.toLowerCase() }; },
+      "My voice": () => { const v = intelligence.status().spoken_voice; return { state: v === "AVAILABLE" ? H : N, evidence: v.toLowerCase().replace(/_/g, " ") }; },
+      "Permission engine": () => ({ state: H, evidence: "external sending " + (F.agent_external_send ? "on" : "off") + ", internal writes " + (F.agent_internal_write ? "on" : "need approval") }),
+      "Event store": async () => { const ev = await events.recent({ limit: 1 }); return { state: H, evidence: ev.length ? "last event " + ev[0].type.toLowerCase().replace(/_/g, " ") : "no events yet" }; },
+      "Native specialists": async () => {
+        const today = await Promise.all(["ace", "grace", "ledger", "forge"].map((a) => ledger.day(a, dayOf(clock()))));
+        const bad = today.filter((d) => d && (d.failed || d.timed_out)).length;
+        return { state: bad ? D : H, evidence: "ACE, GRACE, LEDGER and FORGE run inside me" + (today.some(Boolean) ? "; " + today.reduce((a, d) => a + (d ? d.runs : 0), 0) + " runs today" + (bad ? ", some failed or timed out" : ", all finished") : "; none run yet today") };
+      },
+    };
+    const out = [];
+    for (const [name, fn] of Object.entries(checks)) {
+      try { out.push({ system: name, ...(await fn()) }); } catch (e) { out.push({ system: name, state: X, evidence: "the check itself failed: " + (e.message || e) }); }
+    }
+    if (bridge) {
+      try {
+        const l = await bridge.listBots({ realm: REALM.BUSINESS });
+        for (const b of (l.body && l.body.bots) || []) {
+          const c = b.connection || b.status;
+          out.push({ system: "Grok Bot: " + b.name, state: c === "CONNECTED_VERIFIED" ? H : ["DEGRADED", "UNRESPONSIVE", "CONFIGURED_UNVERIFIED"].indexOf(c) >= 0 ? D : ["FAILED", "AUTH_FAILED"].indexOf(c) >= 0 ? X : N,
+            evidence: c.toLowerCase().replace(/_/g, " ") + (b.last_seen ? ", last heard " + b.last_seen.slice(0, 16).replace("T", " ") + " UTC" : "") + (b.last_error ? ", last error " + b.last_error : "") });
+        }
+      } catch (e) { out.push({ system: "Grok Bots", state: X, evidence: "couldn't read the bridge: " + (e.message || e) }); }
+    } else out.push({ system: "Grok Bots", state: N, evidence: "the bridge isn't running" });
+    return out;
   }
 
   /* Every answer carries a validated presentation spec (core/composer.js).
@@ -285,7 +340,9 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
        research, House knowledge, arithmetic, outreach, and sending the
        outreach draft under discussion.  House state stays with the skills. */
     let intel = null;
-    if (!cmd.skill && intent.reason !== "FAST_PATH") {
+    /* Fast-path and ledger answers are ROYAL's own records: nothing diverts
+       them to research or a model. */
+    if (!cmd.skill && ["FAST_PATH", "LEDGER"].indexOf(intent.reason) < 0) {
       const pre = intelligence.preclassify(cmd.content, convo);
       /* "Send it" with an outreach email open goes to the intelligence layer,
          which asks which one when a House update is also waiting.  Naming
@@ -358,6 +415,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const result = agentResult({ agent: "royal", run_id, status: out.status || RUN_STATUS.OK, summary: out.summary, findings: out.findings || [],
       sources: latest ? [{ label: EVIDENCE.VERIFIED, source: "calculator", verified_at: latest.generated_at }] : [],
       unresolved_questions: out.unresolved || [], surface: out.surface || null, timestamp: clock() });
+    await Promise.allSettled(ctx.ledgerWrites);
     result.skill = r.skill; result.route = { reason: r.reason, confidence: r.confidence }; result.realm = REALM.BUSINESS;
     result.connection = await connector.status(clock());
     result.delegations = ctx.delegations.map((d) => ({ agent: d.agent, status: d.status, verified: d.verified, errors: d.errors || [] }));
@@ -417,7 +475,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   }
 
   return {
-    handle, ingestCalculator, registry, permissions, decisions, audit, events, connector, gate, store, health,
+    handle, ingestCalculator, registry, permissions, decisions, audit, events, connector, gate, store, health, ledger, diagnostics,
     flags: F, provider, intelligence, gateway, metrics,
     tools: () => toolCatalog({ web_search: intelligence.research.status().status === "CONNECTED", x_search: !!(F.x_search && provider.capabilities && provider.capabilities().x_search),
       company_search: intelligence.research.status().status === "CONNECTED", person_search: intelligence.research.status().status === "CONNECTED",

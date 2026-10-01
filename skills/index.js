@@ -15,6 +15,7 @@ import { diffSnapshots } from "../realms/business/royal-t/changes.js";
 import { draftFor } from "./drafts.js";
 import { describeSelf, greetingLine } from "../core/identity.js";
 import { definitionQuery } from "../core/house_language.js";
+import { objectiveWords as objectiveWordsFor } from "../core/agent_ledger.js";
 
 const ALL = ["ace", "grace", "ledger", "forge"];
 
@@ -522,4 +523,96 @@ skill(fastMeta("house_term", "House language", "BUSINESS"), async (ctx) => {
   const lines = q.terms.map((e) => e.say + " is " + e.def + "." + (e.confirm ? " You haven't confirmed " + e.confirm + " yet." : ""));
   for (const u of q.unknown) lines.push("I don't have a House definition for \u201c" + u + "\u201d.");
   return { summary: lines.join(" "), findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL", sources: q.terms.map((e) => e.source) } };
+});
+
+/* --------------------------------------------------- agent activity --- */
+/* "What did each Bot do today?", "What did ACE do?", "What are you working
+   on?": answered from ROYAL's own records (core/agent_ledger.js), never by
+   asking the bots to vouch for themselves and never by searching the web.
+   Each specialist is read on its own; one that cannot be read is said so
+   and the rest are still reported.  A Grok Bot's own posts are REPORTED,
+   not verified. */
+const plainText = (s, n = 140) => String(s || "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
+const countWords = (n, one, many) => n + " " + (n === 1 ? one : many);
+
+export function agentsNamed(text) {
+  const t = String(text || "");
+  const ids = [];
+  for (const [id, re] of [["ace", /\bace\b/i], ["grace", /\bgrace\b/i], ["ledger", /\bledger\b/i], ["forge", /\bforge\b/i], ["house", /\bHOUSE\b|\bhouse (bot|agent)\b/]]) if (re.test(t)) ids.push(id);
+  return ids;
+}
+
+function agentLine(a, objectiveWords) {
+  if (a.error) return a.name + ": I couldn't read its record (" + a.error + ").";
+  const parts = [];
+  const n = a.native;
+  if (n && n.runs) {
+    const kinds = Object.entries(n.objectives || {}).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, c]) => objectiveWords(k) + (c > 1 ? " (" + c + ")" : "")).join(", ");
+    const bad = [n.timed_out ? countWords(n.timed_out, "timed out", "timed out") : "", n.failed ? n.failed + " failed" : ""].filter(Boolean).join(", ");
+    parts.push("worked " + countWords(n.runs, "request", "requests") + " for you: " + kinds + (bad ? "; " + bad : "; all finished"));
+  }
+  const d = a.delegated;
+  if (d && d.length) {
+    const by = (s) => d.filter((t) => t.status === s).length;
+    const bits = [["REPORTED_COMPLETE", "reported done"], ["VERIFIED_COMPLETE", "verified done"], ["IN_PROGRESS", "in progress"], ["ASSIGNED", "assigned"], ["WAITING", "waiting"], ["FAILED", "failed"], ["CANCELLED", "cancelled"]]
+      .map(([s, w]) => (by(s) ? by(s) + " " + w : "")).filter(Boolean).join(", ");
+    parts.push("of " + countWords(d.length, "task", "tasks") + " I gave its Grok Bot: " + bits);
+  }
+  if (a.feed && a.feed.error) parts.push("I couldn't read its Grok Bot's feed (" + a.feed.error + ")");
+  else if (a.feed && a.feed.length) {
+    const last = a.feed[a.feed.length - 1];
+    parts.push("its Grok Bot posted " + countWords(a.feed.length, "update", "updates") + " (reported, not verified); latest: “" + plainText(last.content_markdown) + "”");
+  }
+  if (!parts.length) {
+    const why = a.id === "house" ? " HOUSE has no native runtime yet" + (a.bot ? ", and its Grok Bot is " + String(a.bot.connection).toLowerCase().replace(/_/g, " ") : ", and no Grok Bot is set up for it") + "." : "";
+    return a.name + ": nothing recorded today." + why;
+  }
+  return a.name + " " + parts.join("; ") + ".";
+}
+
+skill(meta("agent_activity", "Agent daily activity", ALL, { purpose: "What each specialist worked on today, from ROYAL's own records.", sources: [] }), async (ctx) => {
+  if (!ctx.ledger) return { status: RUN_STATUS.NOT_CONNECTED, summary: "My activity record isn't available on this server.", findings: [], surface: { type: "text" } };
+  const named = agentsNamed(ctx.text);
+  const review = await ctx.ledger.review({ agents: named.length ? named : undefined, tasks: ctx.tasks, bridge: ctx.bridge, realm: "BUSINESS" });
+  const lines = review.agents.map((a) => agentLine(a, objectiveWordsFor));
+  const failed = review.agents.flatMap((a) => (a.delegated || []).filter((t) => t.status === "FAILED").map((t) => a.name + ": " + plainText(t.objective, 80)));
+  const unreadable = review.agents.filter((a) => a.error || (a.feed && a.feed.error)).map((a) => a.name);
+  const reported = review.agents.filter((a) => a.feed && a.feed.length).map((a) => a.name);
+  const head = named.length === 1 ? "I checked " + review.agents[0].name + "'s record for today." : "I checked today's record for " + (named.length ? "them" : "all five") + ".";
+  const tail = (failed.length ? " Needs you: " + failed.length + " delegated " + (failed.length === 1 ? "task" : "tasks") + " failed." : "") +
+    (reported.length ? " What " + reported.join(" and ") + " posted is their own report; I haven't verified it." : "") +
+    (unreadable.length ? " I couldn't read " + unreadable.join(" and ") + " fully, so that part is missing." : "");
+  return { status: unreadable.length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: head + " " + lines.join(" ") + tail, findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" },
+    data: { day: review.day, agents: review.agents.map((a) => ({ id: a.id, runs: a.native ? a.native.runs : 0, tasks: (a.delegated || []).length, reported: a.feed && a.feed.length ? a.feed.length : 0 })) } };
+});
+
+/* "What are you working on?": the delegated work that is actually open. */
+skill(meta("active_work", "Active work", [], { purpose: "What is running, waiting or failed right now, from the task record.", sources: [] }), async (ctx) => {
+  if (!ctx.tasks) return { summary: "I'm not running anything in the background.", findings: [], surface: { type: "text" } };
+  const all = await ctx.tasks.list();
+  const open = all.filter((t) => ["ASSIGNED", "IN_PROGRESS", "WAITING"].indexOf(t.status) >= 0);
+  const dayAgo = (ctx.now || Date.now()) - 86400000;
+  const recent = all.filter((t) => t.created_at >= dayAgo && ["REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED"].indexOf(t.status) >= 0);
+  if (!open.length && !recent.length) return { summary: "Nothing is running in the background right now. Everything I've been asked today has been answered.", findings: [], surface: { type: "text" } };
+  const say = (t) => t.agent.toUpperCase() + " on “" + plainText(t.objective, 70) + "”" + (t.overdue ? " (past its deadline)" : "");
+  const parts = [];
+  if (open.length) parts.push("I have " + open.map(say).join(", ") + " in progress.");
+  const done = recent.filter((t) => t.status !== "FAILED"), bad = recent.filter((t) => t.status === "FAILED");
+  if (done.length) parts.push(countWords(done.length, "task", "tasks") + " came back in the last day (reported, not verified).");
+  if (bad.length) parts.push(countWords(bad.length, "task", "tasks") + " failed: " + bad.map(say).join(", ") + ".");
+  return { summary: parts.join(" "), findings: [], surface: { type: "text" } };
+});
+
+/* "Diagnose yourself", "What systems are actually working?" */
+skill(meta("self_diagnostic", "Self-diagnostic", [], { purpose: "Every part of ROYAL with its real state and the evidence for it.", sources: [] }), async (ctx) => {
+  if (!ctx.diagnostics) return { status: RUN_STATUS.NOT_CONNECTED, summary: "My diagnostics aren't available here.", findings: [], surface: { type: "text" } };
+  const d = await ctx.diagnostics();
+  const by = (s) => d.filter((x) => x.state === s);
+  const name = (x) => x.system + " (" + x.evidence + ")";
+  const parts = ["I checked " + d.length + " parts of myself."];
+  if (by("HEALTHY").length) parts.push("Working: " + by("HEALTHY").map((x) => x.system).join(", ") + ".");
+  if (by("DEGRADED").length) parts.push("Degraded: " + by("DEGRADED").map(name).join("; ") + ".");
+  if (by("FAILED").length) parts.push("Failed: " + by("FAILED").map(name).join("; ") + ".");
+  if (by("NOT_CONFIGURED").length) parts.push("Not set up: " + by("NOT_CONFIGURED").map(name).join("; ") + ".");
+  return { status: by("FAILED").length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: parts.join(" "), findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" }, data: { checks: d } };
 });

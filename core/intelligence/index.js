@@ -304,19 +304,27 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
      client message alike), cancel delegated tasks, and close the drafts.
      Says exactly what it withdrew; claims nothing about what was already
      approved and carried out before. */
-  async function doCancel(convo, conversation_id) {
+  /* Delegated work is cancelled only when Tahir says so ("stop the tasks",
+     "cancel everything").  A bare "stop" or "never mind", which is also what
+     an interruption sounds like, withdraws approvals and drafts but leaves
+     work in progress running: it used to cancel every delegated task in the
+     conversation without a reason. */
+  const STOP_TASKS = /\b(tasks?|bots?|agents?|everything|all of it|the research|delegat\w*|the work)\b/i;
+  async function doCancel(convo, conversation_id, text = "") {
     const ids = (convo.open_decisions || []).concat(OPEN_DRAFT(convo) && convo.active_draft.decision_id ? [convo.active_draft.decision_id] : []);
     const withdrawn = [];
     for (const id of ids.filter((x, i, a) => a.indexOf(x) === i)) {
       const r = await decisions.cancel(id, "Tahir said stop");
       if (r.ok) withdrawn.push(r.decision.title);
     }
-    const n = await tasks.cancelOpen(conversation_id);
+    const n = STOP_TASKS.test(text) ? await tasks.cancelOpen(conversation_id, "USER_CANCELLED") : 0;
+    const still = n ? 0 : (await tasks.list({ conversation_id, open: true })).length;
     const parts = [];
     if (withdrawn.length) parts.push("Withdrew " + (withdrawn.length === 1 ? "the approval to " + lower(withdrawn[0]) : withdrawn.length + " approvals") + ", so it won't be sent.");
     if (n) parts.push("Cancelled " + n + " delegated task" + (n === 1 ? "" : "s") + ".");
     const hadDraft = OPEN_DRAFT(convo) || !!convo.pending_draft;
-    const summary = parts.length ? "Stopped. " + parts.join(" ") : hadDraft ? "Stopped. The draft is closed; nothing was waiting for approval." : "Nothing was waiting to be sent or done.";
+    let summary = parts.length ? "Stopped. " + parts.join(" ") : hadDraft ? "Stopped. The draft is closed; nothing was waiting for approval." : "Nothing was waiting to be sent or done.";
+    if (still) summary += " " + (still === 1 ? "One delegated task is" : still + " delegated tasks are") + " still running; say \u201cstop the tasks\u201d to cancel " + (still === 1 ? "it" : "them") + ".";
     return say(RUN_STATUS.OK, summary, { type: "cleared" },
       { pending_draft: null, context: { active_draft: OPEN_DRAFT(convo) ? { ...convo.active_draft, cancelled: true } : convo.active_draft || null, open_decisions: [] } });
   }
@@ -386,7 +394,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
       case "revise_draft": out = await doRevise(text, convo); break;
       case "send": out = await doSend(convo, run_id, text); break;
       case "show_sources": out = await doSources(convo); break;
-      case "cancel": out = await doCancel(convo, conversation_id); break;
+      case "cancel": out = await doCancel(convo, conversation_id, text); break;
       case "prospecting": out = await doProspecting(text, intent, policy, run_id); break;
       default: out = null;
     }

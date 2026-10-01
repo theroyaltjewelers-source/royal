@@ -28,6 +28,22 @@ export const INTENTS = [
   { skill: "production_status", re: /\b(production|manufactur(er|ing)|cad|setting|quality control|qc|in the shop|pickups?)\b/i },
 ];
 
+/* Questions about ROYAL's own team and work.  They are answered from ROYAL's
+   own records: before these rules, "what did each bot do today" was read as
+   a current-events question ("today") and sent to web research. */
+const TEAM = /\b(bots?|agents?|specialists?|(ai |my )?team|ace|grace|ledger|forge|house (bot|agent))\b/i;
+const HOUSE_AGENT = /\bHOUSE\b/;   /* the agent is written in capitals; "the house" is the House */
+const WORKED = /\b(do|did|done|doing|work(ed|ing)?|accomplish(ed)?|complete(d)?|handle(d)?|finish(ed)?|report(ed)?|been up to|activity|productive)\b/i;
+const ACTIVE = /\b(what are you (working on|doing|running)|what('?s| is) (running|in progress|still going)|anything (running|in progress)|what('?s| is) (everyone|the team) (working on|doing))\b/i;
+export const DIAGNOSE = /\b(diagnose yourself|self[- ]?diagnos\w*|run (a |your )?diagnostics?|what systems are (actually )?working|which systems are (actually )?working|is everything (actually )?working|are (all )?(your|the) systems (working|up|ok|healthy))\b/i;
+
+export function teamRoute(t) {
+  if (DIAGNOSE.test(t)) return "self_diagnostic";
+  if (ACTIVE.test(t)) return "active_work";
+  if ((TEAM.test(t) || HOUSE_AGENT.test(t)) && WORKED.test(t) && !/^\s*(have|ask|get|tell|let) (ace|grace|ledger|forge|house)\b/i.test(t)) return "agent_activity";
+  return null;
+}
+
 /* Words that turn a question into one about a particular record. */
 const ABOUT_ENTITY = /\b(status|where is|where'?s|why (hasn'?t|has not|isn'?t|is not|did|is)|what'?s (happening|going on) with|how is|update on|tell me about|show me)\b/i;
 
@@ -40,6 +56,8 @@ export function route(text, { entityResolved = false, entityStrong = entityResol
   const fp = fastPath(t);
   if (fp) return { skill: fp, confidence: 0.95, reason: "FAST_PATH" };
   if (definitionQuery(t)) return { skill: "house_term", confidence: 0.9, reason: "FAST_PATH" };
+  const tr = teamRoute(t);
+  if (tr) return { skill: tr, confidence: 0.9, reason: "LEDGER" };
   if (entityResolved && ABOUT_ENTITY.test(t)) return { skill: "project_status", confidence: 0.9, reason: "ENTITY_QUESTION" };
   for (const r of INTENTS) if (r.re.test(t)) return { skill: r.skill, confidence: 0.85, reason: "RULE" };
   if (entityResolved && entityStrong) return { skill: "project_status", confidence: 0.6, reason: "ENTITY_ONLY" };
