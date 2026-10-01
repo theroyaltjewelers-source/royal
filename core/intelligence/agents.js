@@ -20,7 +20,7 @@
    A bot saying it finished is REPORTED_COMPLETE.  VERIFIED_COMPLETE needs a
    check ROYAL can actually make. */
 
-import { TASK_STATUS as TS, CANCEL_REASON } from "../enums.js";
+import { TASK_STATUS as TS, CANCEL_REASON, OPEN_TASK, ROUTE_PROVENANCE as RP, RUN_STATUS } from "../enums.js";
 import { newId } from "../util.js";
 import { backoff } from "../agent_ledger.js";
 
@@ -41,7 +41,10 @@ export function routeAgents(intent, text, { registry, bots = null, flags = {} } 
   let cap = NEED[intent.intent];
   if (intent.entities && intent.entities.agent) {
     const a = registry.get(intent.entities.agent);
-    return a ? [{ agent: a.id, reason: "named by Tahir", ...adapterFor(a, { bots, flags }) }] : [];
+    /* Tahir's choice only when he said the name; an agent a rule or the
+       model filled in is the system's choice, and is recorded as such. */
+    const said = a && new RegExp("\\b" + a.id + "\\b", "i").test(text || "");
+    return a ? [{ agent: a.id, provenance: said ? RP.EXPLICIT_USER_SELECTION : RP.CAPABILITY_ROUTE, reason: said ? "named by Tahir" : "chosen for the request", ...adapterFor(a, { bots, flags }) }] : [];
   }
   if (cap === undefined || cap === null) {
     if (intent.intent !== "unknown" && intent.intent !== "delegate") return [];
@@ -50,18 +53,20 @@ export function routeAgents(intent, text, { registry, bots = null, flags = {} } 
   }
   if (!cap) return [];
   return registry.specialists().filter((a) => (a.capabilities || []).indexOf(cap) >= 0).slice(0, 2)
-    .map((a) => ({ agent: a.id, reason: "capability " + cap, ...adapterFor(a, { bots, flags }) }));
+    .map((a) => ({ agent: a.id, provenance: RP.CAPABILITY_ROUTE, reason: "capability " + cap, ...adapterFor(a, { bots, flags }) }));
 }
 
 function adapterFor(agent, { bots, flags }) {
-  if (agent.status === "ACTIVE") return { adapter: "internal", available: true };
+  if (agent.status === "ACTIVE") return { adapter: "native", available: true };
   const bot = bots && bots.find((b) => b.id === agent.id);
   /* Routed work goes only to a bot with a verified round trip; a bot that is
      merely configured is not trusted with work it wasn't explicitly given. */
   if (flags.advanced_agent_orchestration && bot && bot.can_receive_tasks) return { adapter: "grokbot", available: true };
-  return { adapter: bot ? "grokbot" : "internal", available: false,
+  return { adapter: bot ? "grokbot" : "native", available: false,
     why: bot ? (flags.advanced_agent_orchestration ? agent.name + "'s Grok Bot is " + String(bot.connection).toLowerCase().replace(/_/g, " ") + "." : "Delegating to Grok Bots is switched off (advanced_agent_orchestration).") : agent.name + " is not connected yet." };
 }
+
+export const NATIVE_RING = 20;
 
 export class AgentTasks {
   constructor({ store, clock = () => Date.now(), bridge = null, audit = null }) { Object.assign(this, { store, clock, bridge, audit }); }
@@ -90,12 +95,34 @@ export class AgentTasks {
     return null;
   }
 
+  /* A native specialist run, recorded as one task in one write: I assigned
+     it, ran it and checked its result myself, so an OK run on the House's
+     data is VERIFIED_COMPLETE (verified by me, not reported by anyone).
+     Native runs keep a ring of NATIVE_RING records per agent (slot is the
+     run's number in the ledger), so the store stays bounded; the ledger's
+     daily rollup keeps the counts. */
+  async recordNative({ slot = null, agent, objective, run_id, handoff_id, conversation_id = null, realm = "BUSINESS", status, reason = null, started_at, finished_at, summary = "", findings = 0, provenance = RP.CAPABILITY_ROUTE }) {
+    const final = status === RUN_STATUS.OK ? TS.VERIFIED_COMPLETE : status === RUN_STATUS.PARTIAL ? TS.PARTIAL : reason === "TIMEOUT" ? TS.TIMED_OUT : TS.FAILED;
+    const fail_reason = final === TS.FAILED || final === TS.TIMED_OUT ? (reason === "TIMEOUT" ? CANCEL_REASON.AGENT_TIMEOUT : reason || CANCEL_REASON.UNKNOWN_SYSTEM_CANCEL) : null;
+    const id = slot == null ? newId("tsk") : "nat_" + agent + "_" + (slot % NATIVE_RING);
+    const t = { id, agent, adapter: "native", objective: String(objective || "").slice(0, 500), created_at: started_at, started_at, completed_at: finished_at, deadline: started_at,
+      status: final, fail_reason, run_id, handoff_id, request_id: run_id, conversation_id, realm, provenance, initiated_by: "royal",
+      verification_state: final === TS.VERIFIED_COMPLETE ? "VERIFIED_INTERNAL" : "NONE", verification_method: "I ran it on the calculator's data and validated the result",
+      result: { summary: String(summary).slice(0, 300), findings },
+      history: [{ at: started_at, status: TS.ASSIGNED }, { at: started_at, status: TS.IN_PROGRESS }, { at: finished_at, status: final, reason: fail_reason }] };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const cur = await this.store.get("agent_tasks", id);
+      if ((await this.store.put("agent_tasks", id, t, cur ? cur.rev : null)).ok) return t;
+    }
+    return null;
+  }
+
   /* Bring bot-backed tasks up to date from the bridge's own request records. */
   async refresh(task) {
-    if (task.adapter !== "grokbot" || !task.request_id || !this.bridge || [TS.CANCELLED, TS.VERIFIED_COMPLETE, TS.FAILED].indexOf(task.status) >= 0) return task;
+    if (task.adapter !== "grokbot" || !task.request_id || !this.bridge || [TS.CANCELLED, TS.VERIFIED_COMPLETE, TS.FAILED, TS.TIMED_OUT].indexOf(task.status) >= 0) return task;
     const r = await this.bridge.getRequest(task.agent, task.request_id, {});
     if (!r.body || !r.body.ok) return task;
-    const st = { requested: TS.ASSIGNED, delivered: TS.IN_PROGRESS, in_progress: TS.IN_PROGRESS, completed: TS.REPORTED_COMPLETE, failed: TS.FAILED }[r.body.request.status] || task.status;
+    const st = { requested: TS.ASSIGNED, delivered: TS.IN_PROGRESS, in_progress: TS.IN_PROGRESS, waiting: TS.WAITING, completed: TS.REPORTED_COMPLETE, failed: TS.FAILED }[r.body.request.status] || task.status;
     /* Past its deadline and still open: the status stays what it is and the
        task is marked overdue, so the two facts are not confused. */
     const overdue = [TS.REPORTED_COMPLETE, TS.FAILED, TS.CANCELLED].indexOf(st) < 0 && this.clock() > task.deadline;
@@ -106,7 +133,7 @@ export class AgentTasks {
     const all = (await this.store.list("agent_tasks")).map((r) => r.data).filter((t) => !conversation_id || t.conversation_id === conversation_id);
     const fresh = [];
     for (const t of all) fresh.push(await this.refresh(t));
-    return fresh.filter((t) => !open || [TS.ASSIGNED, TS.IN_PROGRESS, TS.WAITING].indexOf(t.status) >= 0).sort((a, b) => b.created_at - a.created_at);
+    return fresh.filter((t) => !open || OPEN_TASK.indexOf(t.status) >= 0).sort((a, b) => b.created_at - a.created_at);
   }
 
   /* Cancels this conversation's open tasks, with the reason recorded. */

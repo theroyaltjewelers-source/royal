@@ -126,3 +126,94 @@ test("no code reads a bot's old status === \"CONNECTED\"", async () => {
     assert.ok(!/\b(bot|b|st)\.status === "CONNECTED"/.test(src), f);
   }
 });
+
+/* -------------------------------------------------------- agent tasks --- */
+
+import { SPECIALISTS } from "../realms/business/royal-t/specialists.js";
+import { routeAgents, AgentTasks, NATIVE_RING } from "../core/intelligence/agents.js";
+import { createBridge } from "../core/grokbot/bridge.js";
+import { house, NOW } from "./fixtures.js";
+
+async function houseRoyal(opts = {}) {
+  const r = createRoyal({ store: new MemoryStore(), clock: () => NOW, ...opts });
+  await r.ingestCalculator(house());
+  return r;
+}
+
+test("a native specialist run is an AgentTask too: adapter native, VERIFIED_COMPLETE when I ran and validated it", async () => {
+  const r = await houseRoyal();
+  await r.handle({ content: "What needs me?", conversation_id: "c1" });
+  const tasks = await r.intelligence.tasks.list();
+  const native = tasks.filter((t) => t.adapter === "native");
+  assert.ok(native.length >= 2, "one task per specialist consulted: " + native.length);
+  assert.ok(native.every((t) => t.status === "VERIFIED_COMPLETE" && t.verification_state === "VERIFIED_INTERNAL" && t.history.length === 3 && t.run_id));
+  assert.ok(native.every((t) => t.history.map((h) => h.status).join(">") === "ASSIGNED>IN_PROGRESS>VERIFIED_COMPLETE"));
+});
+
+test("a native run that times out is TIMED_OUT with AGENT_TIMEOUT, never USER_CANCELLED", async () => {
+  const saved = SPECIALISTS.grace;
+  SPECIALISTS.grace = () => new Promise(() => {});
+  try {
+    const r = await houseRoyal({ delegationTimeoutMs: 40 });
+    await r.handle({ content: "What needs me?", conversation_id: "c1" });
+    const g = (await r.intelligence.tasks.list()).find((t) => t.agent === "grace");
+    assert.equal(g.status, "TIMED_OUT"); assert.equal(g.fail_reason, "AGENT_TIMEOUT");
+  } finally { SPECIALISTS.grace = saved; }
+});
+
+test("/v1/agents reports current work from records: a run in flight is the current task, a finished one is the last task", async () => {
+  const saved = SPECIALISTS.grace;
+  let release; const gate = new Promise((ok) => { release = ok; });
+  SPECIALISTS.grace = async (ctx) => { await gate; return saved(ctx); };
+  try {
+    const r = await houseRoyal({ delegationTimeoutMs: 5000 });
+    const h = createHandler({ royal: r, auth: async (t) => USERS[t] || null });
+    const get = async () => (await (await h(new Request("https://royal.test/v1/agents", { headers: { Authorization: "Bearer t-owner" } }))).json()).agents.find((a) => a.id === "grace");
+    const turn = r.handle({ content: "What needs me?", conversation_id: "c1" });
+    await new Promise((ok) => setTimeout(ok, 30));
+    const busy = await get();
+    assert.ok(busy.current_task, "GRACE is busy while her run is in flight");
+    assert.equal(busy.current_task.adapter, "native"); assert.equal(busy.current_task.status, "IN_PROGRESS");
+    release(); await turn;
+    const done = await get();
+    assert.equal(done.current_task, null);
+    assert.equal(done.last_task.status, "VERIFIED_COMPLETE");
+  } finally { SPECIALISTS.grace = saved; }
+});
+
+test("native task records stay bounded: a ring per agent, the ledger keeps the counts", async () => {
+  const r = await houseRoyal();
+  for (let i = 0; i < NATIVE_RING + 6; i++) await r.handle({ content: "What needs me?", conversation_id: "c" + i });
+  const per = {};
+  for (const t of await r.intelligence.tasks.list()) if (t.adapter === "native") per[t.agent] = (per[t.agent] || 0) + 1;
+  assert.ok(Object.values(per).every((n) => n <= NATIVE_RING), JSON.stringify(per));
+});
+
+test("routing provenance: only a name Tahir said is his choice; a rule's or the model's pick is the system's", () => {
+  const registry = { get: (id) => ({ id, name: id.toUpperCase(), status: "ACTIVE", capabilities: ["outreach"] }), specialists: () => [{ id: "ace", status: "ACTIVE", capabilities: ["outreach"] }] };
+  const said = routeAgents({ intent: "outreach_draft", entities: { agent: "ace" } }, "Have ACE write him", { registry })[0];
+  assert.equal(said.provenance, "EXPLICIT_USER_SELECTION");
+  const filled = routeAgents({ intent: "outreach_draft", entities: { agent: "ace" } }, "Write them something", { registry })[0];
+  assert.equal(filled.provenance, "CAPABILITY_ROUTE"); assert.notEqual(filled.reason, "named by Tahir");
+  const cap = routeAgents({ intent: "outreach_draft", entities: {} }, "Write them something", { registry })[0];
+  assert.equal(cap.provenance, "CAPABILITY_ROUTE"); assert.equal(cap.adapter, "native");
+});
+
+test("a Grok Bot task reaches WAITING when its bot says it is blocked, and REPORTED_COMPLETE (not verified) when it says done", async () => {
+  const bridge = createBridge({ env: { GROKBOT_ENABLED: "true", GROKBOT_GRACE_WEBHOOK_URL: "https://hook.test/g", GROKBOT_GRACE_WEBHOOK_KEY: "k" },
+    fetchImpl: async () => new Response("ok"), logger: { warn() {} } });
+  const tasks = new AgentTasks({ store: new MemoryStore(), clock: () => NOW, bridge });
+  const t = await tasks.create({ agent: "grace", adapter: "grokbot", objective: "Chase the setter" });
+  const sent = await bridge.sendMessage("grace", { content: "Chase the setter" }, {});
+  await tasks.update(t.id, { request_id: sent.body.request_id, status: "IN_PROGRESS" });
+  await bridge.postEvent("grace", { request_id: sent.body.request_id, type: "progress", status: "blocked", content_markdown: "Waiting on the setter." });
+  assert.equal((await tasks.list()).find((x) => x.id === t.id).status, "WAITING");
+  await bridge.postEvent("grace", { request_id: sent.body.request_id, type: "result", content_markdown: "Done." });
+  assert.equal((await tasks.list()).find((x) => x.id === t.id).status, "REPORTED_COMPLETE");
+});
+
+test("every task status in the enum is reachable by code", async () => {
+  const { TASK_STATUS } = await import("../core/enums.js");
+  const src = (await readFile(join(ROOT, "core/intelligence/agents.js"), "utf8"));
+  for (const s of Object.keys(TASK_STATUS)) assert.ok(new RegExp("TS\\." + s + "\\b").test(src), s + " is never set");
+});

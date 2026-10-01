@@ -20,11 +20,11 @@ import { compose } from "./composer.js";
 import { providerLine } from "../web/js/notices.js";
 import { agentResult, validateResult } from "./result.js";
 import { UnavailableProvider, parseModelJson } from "./providers/provider.js";
-import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM } from "./enums.js";
+import { RUN_STATUS, MODALITY, CONNECTION, EVIDENCE, PRIORITY, NEED, REALM, OPEN_TASK } from "./enums.js";
 import { newId, clone, stableHash } from "./util.js";
 import { runTraced, mark, setPath, timingOf } from "./trace.js";
 import { systemPrompt, fastPath, describeSelf, greetingLine } from "./identity.js";
-import { AgentActivityLedger, dayOf } from "./agent_ledger.js";
+import { AgentActivityLedger, dayOf, objectiveWords } from "./agent_ledger.js";
 import { congruence } from "./congruence.js";
 import { RoyalTConnector } from "../realms/business/royal-t/connector.js";
 import { SPECIALISTS, DEFAULT_OWNERS } from "../realms/business/royal-t/specialists.js";
@@ -122,6 +122,10 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   const openDraft = (c) => c && c.active_draft && !c.active_draft.sent && !c.active_draft.cancelled;
 
   /* ------------------------------------------------------ delegation --- */
+  /* Native specialist runs in flight in this process, so "what is GRACE
+     doing" is answered while she is still working.  Finished runs are in
+     the ledger and agent_tasks. */
+  const running = new Map();
   function makeCtx(base) {
     const delegations = [];
     /* This request's ledger writes; awaited before its answer is returned, so
@@ -129,7 +133,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const ledgerWrites = [];
     const ctx = {
       ...base, owners, decisions, connector, gate, store, provider, health, domains: domainState(), delegations, registry, flags: F, messenger, ledgerWrites,
-      ledger, tasks: intelligence.tasks, bridge, diagnostics,
+      ledger, tasks: intelligence.tasks, bridge, diagnostics, running: () => [...running.values()],
       read: async (agentId, tool, args = {}) => {
         const r = await gate.request({ agentId, tool, args, domain: "royal_t", run_id: base.run_id });
         if (r.status === "OK") return r.output;
@@ -142,12 +146,14 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
          agent activity ledger (core/agent_ledger.js). */
       consult: async (agentIds) => {
         const out = {};
+        const runKey = (id) => id + ":" + base.run_id;
         await Promise.allSettled(agentIds.map(async (id) => {
           const d = { agent: id, objective: base.skill, context: { entity: base.entity ? base.entity.id : null }, required_output: "AgentResult",
             deadline_ms: delegationTimeoutMs, constraints: ["read only"], approval_boundary: "no consequential action",
             verification_requirement: "every finding labelled, VERIFIED findings cite a source", started_at: clock(), handoff_id: base.run_id + ":" + id };
           let r, timer = null;
           const t0 = Date.now();
+          running.set(runKey(id), { agent: id, adapter: "native", objective: objectiveWords(base.skill), run_id: base.run_id, started_at: d.started_at, status: "IN_PROGRESS" });
           try {
             if (typeof SPECIALISTS[id] !== "function") throw Object.assign(new Error(id.toUpperCase() + " has no native runtime"), { reason: "NOT_CONNECTED" });
             r = await Promise.race([SPECIALISTS[id]({ ...ctx, run_id: base.run_id }),
@@ -160,11 +166,16 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
             r = agentResult({ agent: id, run_id: base.run_id, status: d.reason === "NOT_CONNECTED" ? RUN_STATUS.NOT_CONNECTED : RUN_STATUS.FAILED,
               summary: d.reason === "TIMEOUT" ? id.toUpperCase() + " didn't finish in time, so nothing it would have found is shown."
                 : id.toUpperCase() + " didn't finish (" + (e.message || e) + "). Nothing it would have found is shown." });
-          } finally { clearTimeout(timer); }
+          } finally { clearTimeout(timer); running.delete(runKey(id)); }
           d.status = r.status; d.finished_at = clock();
           delegations.push(d); out[id] = r;
+          /* The run in the ledger, then as an AgentTask, so "what is GRACE
+             doing" and "did ACE finish" read one record whichever backend
+             ran the work. */
           ledgerWrites.push(ledger.noteRun({ agent: id, skill: base.skill, status: r.status, reason: d.reason || null, findings: (r.findings || []).length,
-            run_id: base.run_id, ms: Date.now() - t0, error: d.errors && d.errors[0] }).catch(() => null));
+            run_id: base.run_id, ms: Date.now() - t0, error: d.errors && d.errors[0] }).catch(() => null).then((day) => intelligence.tasks.recordNative({ slot: day ? day.runs : null, agent: id, objective: objectiveWords(base.skill), run_id: base.run_id, handoff_id: d.handoff_id,
+            conversation_id: base.command ? base.command.conversation_id || null : null, realm: base.command ? base.command.realm || REALM.BUSINESS : REALM.BUSINESS,
+            status: r.status, reason: d.reason || null, started_at: d.started_at, finished_at: d.finished_at, summary: r.summary, findings: (r.findings || []).length })).catch(() => null));
         }));
         return out;
       },
@@ -496,6 +507,20 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       delegate_to_bot: !bridge ? false : bridge.enabled && !bridge.enabled() ? "DISABLED" : F.advanced_agent_orchestration ? true : "DISABLED" },
       { implemented: new Set([...tools.keys(), "x_search", "email_verify"]), executors: new Set([...decisions.executors.keys()]) }),
     agents: () => registry.all().map((a) => ({ ...a })),
+    /* What each agent is doing now and did last, from records: native runs
+       in flight, then open delegated tasks, then the latest task. */
+    currentWork: async () => {
+      let tasks = [];
+      try { tasks = await intelligence.tasks.list({}); } catch (_) { tasks = null; }
+      const by = (id) => (tasks || []).filter((t) => t.agent === id);
+      return Object.fromEntries(registry.all().map((a) => {
+        const live = [...running.values()].filter((x) => x.agent === a.id);
+        const open = by(a.id).filter((t) => OPEN_TASK.indexOf(t.status) >= 0);
+        const pick = (t) => (t ? { task_id: t.id || null, adapter: t.adapter, objective: t.objective, status: t.status, started_at: t.started_at || t.created_at, completed_at: t.completed_at || null, overdue: !!t.overdue } : null);
+        const cur = live[0] ? { ...pick({ ...live[0], id: null }), adapter: "native" } : pick(open[0]);
+        return [a.id, { current_task: cur, active_count: live.length + open.length, last_task: pick(by(a.id)[0]), tasks_readable: tasks !== null }];
+      }));
+    },
     skills: skillCatalog,
     domains: (realm) => domainState().filter((d) => !realm || d.realm === realm),
     /* Resolving a decision; an external send that ran becomes an event. */

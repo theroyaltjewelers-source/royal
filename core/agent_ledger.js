@@ -84,7 +84,9 @@ export class AgentActivityLedger {
     const out = await Promise.allSettled(agents.map(async (id) => {
       const meta = AGENTS.find((a) => a.id === id) || { id, name: id.toUpperCase(), domain: "" };
       const native = await this.day(id, day);
-      const delegated = allTasks === null ? null : allTasks.filter((t) => t.agent === id && dayOf(t.created_at, this.tz) === day);
+      /* Native runs are counted once, in agent_day; tasks here are the work
+         handed to a Grok Bot. */
+      const delegated = allTasks === null ? null : allTasks.filter((t) => t.agent === id && t.adapter !== "native" && dayOf(t.created_at, this.tz) === day);
       const bot = bots ? bots.find((b) => b.id === id) || null : null;
       let feed = null;
       if (bridge && bot) {

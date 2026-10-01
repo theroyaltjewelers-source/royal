@@ -36,7 +36,7 @@ export const LIMITS = Object.freeze({
 });
 
 const BOT_EVENT_TYPES = ["progress", "result", "alert", "message"];
-const REQUEST_STATUSES = ["requested", "delivered", "in_progress", "completed", "failed"];
+const REQUEST_STATUSES = ["requested", "delivered", "in_progress", "waiting", "completed", "failed"];
 const EVENT_TO_REQUEST = { progress: "in_progress", result: "completed" };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONV_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -192,7 +192,8 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     if (!allows(bot, realm)) return fail(403, "REALM_FORBIDDEN", bot.name + " cannot post " + realm.toLowerCase() + " events.");
 
     if (req) {
-      const next = REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type];
+      /* "blocked" from a bot means the same as waiting on someone. */
+      const next = status === "blocked" ? "waiting" : REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type];
       if (next && req.status !== next) await store.updateRequest(bot.id, req.id, { status: next, last_error: next === "failed" ? "reported by bot" : null });
     }
     /* A correlated answer, with the bot's own token, to a message ROYAL

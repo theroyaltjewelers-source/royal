@@ -237,13 +237,16 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     try {
       if (req.method === "GET" && path === "/v1/status") return json(req, 200, { ok: true, ...(await royal.status()), user: { id: user.id } });
       if (req.method === "GET" && path === "/v1/agents") {
-        /* Registry metadata plus what the audit log actually shows each agent did last. */
+        /* Registry metadata, what the audit log shows each agent did last, and
+           its current work from records (native runs in flight, open
+           delegated tasks), never from asking the agent. */
         const log = await royal.audit.developerLog({ limit: 2000 });
+        const work = royal.currentWork ? await royal.currentWork() : {};
         const agents = royal.agents().map((a) => {
-          const last = log.find((e) => e.agent === a.id);
+          const last = log.find((e) => e.agent === a.id), w = work[a.id] || {};
           return { id: a.id, name: a.name, role: a.role, capabilities: a.capabilities || [], status: a.status, permission_profile: a.permission_profile,
             available_tools: a.allowed_tools, realms: a.realms, version: a.version, description: a.description,
-            last_activity: last ? { at: last.at, action: last.action } : null, current_task: null,
+            last_activity: last ? { at: last.at, action: last.action } : null, current_task: w.current_task || null, active_count: w.active_count || 0, last_task: w.last_task || null,
             health: a.status !== "ACTIVE" ? "NOT_CONNECTED" : (last && /FAILED|DENIED/.test(last.action) ? "DEGRADED" : "OK") };
         });
         return json(req, 200, { ok: true, agents });

@@ -613,15 +613,17 @@ skill(meta("agent_activity", "Agent daily activity", ALL, { purpose: "What each 
 /* "What are you working on?": the delegated work that is actually open. */
 skill(meta("active_work", "Active work", [], { purpose: "What is running, waiting or failed right now, from the task record.", sources: [] }), async (ctx) => {
   if (!ctx.tasks) return { summary: "I'm not running anything in the background.", findings: [], surface: { type: "text" } };
-  const all = await ctx.tasks.list();
+  const all = (await ctx.tasks.list()).filter((t) => t.adapter !== "native");   /* native runs finish inside the answer that asked for them */
+  const live = (ctx.running ? ctx.running() : []).filter((x) => x.run_id !== ctx.run_id);
   const open = all.filter((t) => ["ASSIGNED", "IN_PROGRESS", "WAITING"].indexOf(t.status) >= 0);
   const dayAgo = (ctx.now || Date.now()) - 86400000;
-  const recent = all.filter((t) => t.created_at >= dayAgo && ["REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED"].indexOf(t.status) >= 0);
-  if (!open.length && !recent.length) return { summary: "Nothing is running in the background right now. Everything I've been asked today has been answered.", findings: [], surface: { type: "text" } };
-  const say = (t) => t.agent.toUpperCase() + " on “" + plainText(t.objective, 70) + "”" + (t.overdue ? " (past its deadline)" : "");
+  const recent = all.filter((t) => t.created_at >= dayAgo && ["REPORTED_COMPLETE", "VERIFIED_COMPLETE", "PARTIAL", "TIMED_OUT", "FAILED"].indexOf(t.status) >= 0);
+  if (!open.length && !recent.length && !live.length) return { summary: "Nothing is running in the background right now. Everything I've been asked today has been answered.", findings: [], surface: { type: "text" } };
+  const say = (t) => t.agent.toUpperCase() + " on “" + plainText(t.objective, 70) + "”" + (t.status === "WAITING" ? " (waiting on someone)" : "") + (t.overdue ? " (past its deadline)" : "");
   const parts = [];
+  if (live.length) parts.push(live.map((x) => x.agent.toUpperCase() + " is working on " + x.objective).join(", ") + " right now.");
   if (open.length) parts.push("I have " + open.map(say).join(", ") + " in progress.");
-  const done = recent.filter((t) => t.status !== "FAILED"), bad = recent.filter((t) => t.status === "FAILED");
+  const done = recent.filter((t) => ["FAILED", "TIMED_OUT"].indexOf(t.status) < 0), bad = recent.filter((t) => ["FAILED", "TIMED_OUT"].indexOf(t.status) >= 0);
   if (done.length) parts.push(countWords(done.length, "task", "tasks") + " came back in the last day (reported, not verified).");
   if (bad.length) parts.push(countWords(bad.length, "task", "tasks") + " failed: " + bad.map(say).join(", ") + ".");
   return { summary: parts.join(" "), findings: [], surface: { type: "text" } };

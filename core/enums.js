@@ -37,11 +37,30 @@ export const EMAIL_STATUS = set("PUBLICLY_LISTED", "PROVIDER_FOUND", "PATTERN_IN
 
 /* Delegated work, from assignment to verified completion. */
 /* Why something stopped.  A provider timeout is not Tahir cancelling, and a
-   bot failure is not either: every cancellation and failure carries one. */
-export const CANCEL_REASON = set("USER_CANCELLED", "BARGE_IN_REPLACED_REQUEST", "PARENT_CANCELLED", "TIMEOUT", "NETWORK_FAILURE", "PROVIDER_FAILURE",
-  "BOT_FAILURE", "TOOL_FAILURE", "COMPONENT_DISPOSED", "SYSTEM_SHUTDOWN", "UNKNOWN");
+   bot failure is not either: every cancellation and failure carries one.
+   Only USER_CANCELLED and USER_BARGE_IN mean Tahir stopped something; every
+   other reason is the system's, and is never shown as his choice. */
+export const CANCEL_REASON = set("USER_CANCELLED", "USER_BARGE_IN", "REQUEST_REPLACED", "PARENT_CANCELLED", "CHILD_TIMEOUT", "PROVIDER_TIMEOUT",
+  "TOOL_TIMEOUT", "AGENT_TIMEOUT", "TIMEOUT", "NETWORK_FAILURE", "PROVIDER_FAILURE", "BOT_FAILURE", "TOOL_FAILURE", "NOT_CONNECTED", "INVALID_RESULT",
+  "COMPONENT_DISPOSED", "REALM_SWITCH", "AUTH_EXPIRED", "SERVER_SHUTDOWN", "UNKNOWN_SYSTEM_CANCEL",
+  /* older spellings, still read from stored records */ "BARGE_IN_REPLACED_REQUEST", "SYSTEM_SHUTDOWN", "UNKNOWN");
+export const USER_CANCEL = freeze(["USER_CANCELLED", "USER_BARGE_IN"]);
 
-export const TASK_STATUS = set("ASSIGNED", "IN_PROGRESS", "WAITING", "REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED", "CANCELLED");
+/* Every state below is reached by code (core/intelligence/agents.js):
+     ASSIGNED           the task exists, nothing has run yet
+     IN_PROGRESS        delivered to a bot, or a native run started
+     WAITING            the bot reported it is waiting on someone (status waiting/blocked)
+     REPORTED_COMPLETE  a bot said it finished; not checked
+     VERIFIED_COMPLETE  a native run I executed myself on the House's data and validated
+     PARTIAL            finished with part of the result
+     TIMED_OUT          ran past its deadline and was abandoned
+     FAILED             failed, with fail_reason
+     CANCELLED          stopped, with cancel_reason */
+export const TASK_STATUS = set("ASSIGNED", "IN_PROGRESS", "WAITING", "REPORTED_COMPLETE", "VERIFIED_COMPLETE", "PARTIAL", "TIMED_OUT", "FAILED", "CANCELLED");
+export const OPEN_TASK = freeze(["ASSIGNED", "IN_PROGRESS", "WAITING"]);
+
+/* Why an agent was chosen.  Only EXPLICIT_USER_SELECTION is Tahir's choice. */
+export const ROUTE_PROVENANCE = set("EXPLICIT_USER_SELECTION", "CAPABILITY_ROUTE", "DEFAULT_DOMAIN_OWNER", "FALLBACK", "SYSTEM_RECOVERY");
 
 /* The reasoning policy (core/intelligence/reasoning.js). */
 export const REASONING_LEVEL = freeze({ DIRECT_RETRIEVAL: 0, QUICK: 1, OPERATIONAL: 2, DEEP: 3, AGENTIC_RESEARCH: 4, EXECUTION_PLANNING: 5 });
