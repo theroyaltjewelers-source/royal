@@ -24,6 +24,9 @@ function same(a, b) { if (a.length !== b.length) return false; let d = 0; for (l
 export function passcodeAuth({ passcode, secret, days = 30, clock = () => Date.now() }) {
   const configured = typeof passcode === "string" && passcode.length >= 10 && typeof secret === "string" && secret.length >= 32;
   const attempts = new Map(); /* who -> [timestamps] */
+  /* Every wrong passcode from anywhere, so guessing from many addresses is
+     limited too: 30 in 15 minutes and sign-in pauses for everyone. */
+  let allWrong = [];
 
   return {
     configured,
@@ -34,11 +37,14 @@ export function passcodeAuth({ passcode, secret, days = 30, clock = () => Date.n
         message: "ROYAL's passcode is not set up on the server. Add ROYAL_OWNER_PASSCODE and ROYAL_SESSION_SECRET in Render." };
       const now = clock(), window = 15 * 60000;
       const recent = (attempts.get(who) || []).filter((t) => now - t < window);
-      if (recent.length >= 5) return { ok: false, status: 429, error: "TOO_MANY_ATTEMPTS", message: "Too many wrong passcodes. Wait 15 minutes." };
+      allWrong = allWrong.filter((t) => now - t < window);
+      if (recent.length >= 5 || allWrong.length >= 30) return { ok: false, status: 429, error: "TOO_MANY_ATTEMPTS", message: "Too many wrong passcodes. Wait 15 minutes." };
       const good = same(await sha(given), await sha(passcode));
       if (!good) {
-        recent.push(now); attempts.set(who, recent);
-        if (attempts.size > 1000) attempts.clear();
+        recent.push(now); attempts.set(who, recent); allWrong.push(now);
+        /* Forget only addresses whose attempts have all expired; never clear
+           the lot, which would let a flood of addresses reset the limit. */
+        if (attempts.size > 1000) for (const [k, v] of attempts) if (!v.some((t) => now - t < window)) attempts.delete(k);
         return { ok: false, status: 401, error: "WRONG_PASSCODE", message: "That passcode is not right." };
       }
       attempts.delete(who);

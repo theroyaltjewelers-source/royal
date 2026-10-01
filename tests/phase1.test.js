@@ -322,3 +322,20 @@ test("barge-in during a check: the answer is handed back, but I don't speak it o
   await b.ev({ type: "response.function_call_arguments.done", name: "ask_royal", call_id: "c2", arguments: JSON.stringify({ request: "Hi" }) });
   assert.ok(b.sent.some((m) => m.type === "response.create"));
 });
+
+/* ------------------------------------------------------------- security --- */
+
+import { passcodeAuth } from "../server/passcode.js";
+import { clientAddress } from "../server/handler.js";
+
+test("sign-in rate limit: a forged X-Forwarded-For doesn't reset it, and guessing from many addresses is limited too", async () => {
+  const req = (xff) => new Request("https://royal.test/v1/login", { method: "POST", headers: { "x-forwarded-for": xff } });
+  assert.equal(clientAddress(req("1.2.3.4, 10.0.0.9")), "10.0.0.9", "the proxy's entry, not the client's");
+  assert.equal(clientAddress(req("9.9.9.9, 10.0.0.9")), "10.0.0.9");
+  const auth = passcodeAuth({ passcode: "correct horse battery", secret: "s".repeat(40) });
+  for (let i = 0; i < 5; i++) await auth.login("wrong", "10.0.0.9");
+  assert.equal((await auth.login("correct horse battery", "10.0.0.9")).status, 429, "one address: 5 tries");
+  const many = passcodeAuth({ passcode: "correct horse battery", secret: "s".repeat(40) });
+  for (let i = 0; i < 30; i++) await many.login("wrong", "addr" + i);
+  assert.equal((await many.login("wrong", "fresh-address")).status, 429, "30 wrong from anywhere pauses sign-in");
+});

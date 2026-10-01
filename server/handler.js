@@ -27,6 +27,14 @@ const ROUTES = [
 ];
 export function allowedMethods(path) { const r = ROUTES.find(([re]) => re.test(path)); return r ? r[1] : null; }
 
+/* The address a request came from, for rate limits.  The proxy in front
+   (Render) appends the address it saw to X-Forwarded-For, so the last entry
+   is the one a client cannot forge; the first is whatever the client sent. */
+export function clientAddress(req) {
+  const xs = String(req.headers.get("x-forwarded-for") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return xs.length ? xs[xs.length - 1] : "anon";
+}
+
 /* The path as it is logged: ids and tokens folded away, never the query. */
 export function routeOf(path) {
   if (!path.startsWith("/v1/")) return path === "/" || /\.(js|css|html|png|ico|svg|txt|json)$/.test(path) ? "static" : "static:other";
@@ -188,7 +196,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     if (path === "/v1/login" && req.method === "POST") {
       if (!passcode) return fail(req, 503, "PASSCODE_NOT_CONFIGURED", "ROYAL's passcode sign-in is not set up on the server.");
       let b; try { b = await body(req); } catch (e) { return fail(req, e.status || 400, e.code || "BAD_JSON", e.message); }
-      const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+      const who = clientAddress(req);
       const r = await passcode.login(String(b.passcode || ""), who);
       if (!r.ok) return fail(req, r.status, r.error, r.message);
       await royal.audit.record({ actor: "tahir", action: "SIGNED_IN", summary: "Signed in to ROYAL with the passcode.", executive: true });
@@ -210,7 +218,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check that token. Nothing was done."); }
       if (!principal) {
         /* Slow down guessing: invalid bot tokens are limited per address. */
-        const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
+        const who = clientAddress(req);
         if (limited("badbot:" + who)) return fail(req, 429, "RATE_LIMITED", "Too many requests. Wait a minute.");
         return fail(req, 401, "AUTH_INVALID", "That token is not valid or has been revoked.");
       }
