@@ -47,7 +47,7 @@ const R = {
   sources: /\b(where did you (get|find) (that|this)|what('?s| are) (your|the) sources?|show (me )?(the )?sources|how do you know( that)?|cite)\b/i,
   /* Only a bare instruction cancels: "Stop the Marcus production" is a House
      question, not a cancellation. */
-  cancel: /^\s*(please\s+)?(stop|cancel|abort|halt|don'?t send|do not send|never ?mind|forget (it|that))(\s+(it|that|this|everything|the (email|draft|message|send|sending|update|approval|request|task|research)))?(\s+please)?\s*[.!]*\s*$/i,
+  cancel: /^\s*(please\s+)?(stop|cancel|abort|halt|don'?t send|do not send|never ?mind|forget (it|that))(\s+(it|that|this|everything|the (email|draft|message|send|sending|update|approval|request|tasks?|research|bots?|agents?|work)|all (the )?tasks))?(\s+please)?\s*[.!]*\s*$/i,
   revise: /\b(shorter|longer|shorten|tighten|less (formal|corporate|salesy|stiff)|more (casual|formal|personal|direct|warm)|warmer|punchier|simpler|friendlier|reword|rephrase|rewrite|redo|make it|change the (tone|subject|opening|ending)|add (a line|something) about|remove the)\b/i,
   role: /\b(chief (financial|executive|operating|technology|marketing) officer|cfo|ceo|coo|cto|cmo|president|founders?|owner|head of [a-z]+|vp (of )?[a-z]+|director of [a-z]+)\b/i,
   people: /\b(who('?s| is| are)|find( me)?|look up|identify|get me|tell me who)\b/i,

@@ -9,6 +9,7 @@ import { createRoyal } from "../core/royal.js";
 import { stableHash } from "../core/util.js";
 import { passcodeAuth } from "./passcode.js";
 import { isBotToken } from "../core/grokbot/tokens.js";
+import { identityPrompt } from "../core/identity.js";
 
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
@@ -27,7 +28,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
   const SEC = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" };
   /* Spoken replies: a short cache so a phrase ROYAL says often (a greeting,
      "Nothing needs you") is paid for once per process. */
-  const SPEECH_MAX = 1200, SPEECH_CACHE = 64;
+  const SPEECH_MAX = 1200, SPEECH_CACHE = 160;   /* by sentence, so more entries */
   const speechCache = new Map();
   function json(req, status, body) {
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SEC, ...cors(req) } });
@@ -56,7 +57,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
   }
 
   /* ------------------------------------------------ Grok Bot bridge --- */
-  const BOT_PATH = /^\/v1\/bots\/([a-z][a-z0-9_]{0,31})(?:\/(token|message|events|feed|stream|requests\/([0-9a-fA-F-]{36})))?$/;
+  const BOT_PATH = /^\/v1\/bots\/([a-z][a-z0-9_]{0,31})(?:\/(token|message|verify|events|feed|stream|requests\/([0-9a-fA-F-]{36})))?$/;
   const noBridge = (req) => fail(req, 503, "BRIDGE_UNAVAILABLE", "The Grok Bot bridge is not running on this server.");
   const since = (req, url) => url.searchParams.get("since") || req.headers.get("last-event-id") || undefined;
 
@@ -104,6 +105,13 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       if (r.body.request_id) await audit("BOT_MESSAGE_SENT", "Sent a message to the " + id + " bot (" + (r.body.ok ? "delivered" : r.body.error) + ").", (b && b.realm) || realm);
       return reply(req, r);
     }
+    /* A real connection check: a message the bot must answer.  The bot is
+       CONNECTED_VERIFIED only once it posts back with its own token. */
+    if (action === "verify" && req.method === "POST") {
+      const r = await bridge.sendMessage(id, { skill: "connection_check", content: "Connection check from ROYAL. Reply with a result event for this request_id, saying ready. Take no other action." }, { realm, requestedBy: "tahir" });
+      if (r.body.request_id) await audit("BOT_VERIFY_SENT", "Sent a connection check to the " + id + " bot (" + (r.body.ok ? "delivered, waiting for its reply" : r.body.error) + ").", realm);
+      return reply(req, r);
+    }
     if (action === "events" && req.method === "POST") return fail(req, 403, "BOT_ONLY", "Only the bot itself posts to its events, with its own token.");
     if (action === "feed" && req.method === "GET") return reply(req, await bridge.getFeed(id, { since: url.searchParams.get("since") || undefined, limit: url.searchParams.get("limit") || undefined, realm }));
     if (action === "stream" && req.method === "GET") return reply(req, await bridge.stream(id, { realm, since: since(req, url), signal: req.signal }));
@@ -145,7 +153,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     if (isBotToken(token[1])) {
       if (!bridge) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
       let principal;
-      try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check that token. Nothing was done."); }
+      try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check that token. Nothing was done."); }
       if (!principal) {
         /* Slow down guessing: invalid bot tokens are limited per address. */
         const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
@@ -157,14 +165,14 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       catch (e) {
         if (e.status) return fail(req, e.status, e.code, e.message);
         await royal.audit.record({ actor: "bot:" + principal.bot_id, action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
-        return fail(req, 500, "SERVER_ERROR", "ROYAL hit an internal error. Nothing was changed.");
+        return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
       }
     }
     let user;
     try {
       user = passcode ? await passcode.verify(token[1]) : undefined;
       if (user === undefined) user = await auth(token[1]);
-    } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check your sign-in. Nothing was done."); }
+    } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check your sign-in. Nothing was done."); }
     if (!user) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
     /* House members may keep ROYAL current by sending the calculator's state,
        and do nothing else: they cannot read answers, decisions or activity. */
@@ -249,25 +257,25 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
            voice, so every device sounds the same.  Business only, like
            realtime voice: nothing from the Personal side reaches xAI.  The
            browser falls back to the device's own voice on any refusal. */
-        if (!royal.flags.spoken_voice) return fail(req, 409, "SPEECH_DISABLED", "ROYAL's voice is switched off (spoken_voice). The device's own voice is used.");
-        if (realmQ === "PERSONAL") return fail(req, 409, "SPEECH_BUSINESS_ONLY", "ROYAL's voice speaks on the Business side only. The device's own voice is used in Personal.");
+        if (!royal.flags.spoken_voice) return fail(req, 409, "SPEECH_DISABLED", "My voice is switched off (spoken_voice). Your device's own voice is used.");
+        if (realmQ === "PERSONAL") return fail(req, 409, "SPEECH_BUSINESS_ONLY", "My voice speaks on the Business side only. In Personal, your device's own voice is used.");
         if (!royal.provider.speech || !(royal.provider.capabilities && royal.provider.capabilities().speech))
-          return fail(req, 409, "SPEECH_NOT_CONFIGURED", "ROYAL's voice needs XAI_API_KEY on the server.");
+          return fail(req, 409, "SPEECH_NOT_CONFIGURED", "My voice needs XAI_API_KEY on the server.");
         const b = await body(req);
         const text = String((b && b.text) || "").replace(/\s+/g, " ").trim();
         if (!text) return fail(req, 400, "TEXT_REQUIRED", "Nothing to say.");
-        if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "ROYAL speaks at most " + SPEECH_MAX + " characters at a time.");
+        if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "I speak at most " + SPEECH_MAX + " characters at a time.");
         const key = royal.provider.voice + "\u0000" + text;
-        let audio = speechCache.get(key);
-        if (audio) { speechCache.delete(key); speechCache.set(key, audio); }
+        let hit = speechCache.get(key);
+        if (hit) { speechCache.delete(key); speechCache.set(key, hit); }
         else {
           const s = await royal.provider.speech({ text });
           if (!s.ok) return json(req, 502, { ok: false, error: s.failed_because, message: "The voice service did not answer" + (s.detail ? ": " + s.detail : ".") });
-          audio = s.audio;
-          speechCache.set(key, audio);
+          hit = { audio: s.audio, type: s.type || "audio/wav" };
+          speechCache.set(key, hit);
           if (speechCache.size > SPEECH_CACHE) speechCache.delete(speechCache.keys().next().value);
         }
-        return new Response(audio, { status: 200, headers: { "Content-Type": "audio/mpeg", "Content-Length": String(audio.length), ...SEC, ...cors(req) } });
+        return new Response(hit.audio, { status: 200, headers: { "Content-Type": hit.type, "Content-Length": String(hit.audio.length), ...SEC, ...cors(req) } });
       }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
@@ -298,7 +306,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     } catch (e) {
       if (e.status) return fail(req, e.status, e.code, e.message);
       await royal.audit.record({ actor: "system", action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
-      return fail(req, 500, "SERVER_ERROR", "ROYAL hit an internal error. Nothing was changed.");
+      return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
     }
   };
 }
@@ -352,11 +360,15 @@ export async function fromEnv(env, { store, providerFactory, extras = {} } = {})
    audit.  It is told never to claim an action happened. */
 export function voiceSessionConfig(voice = "ara") {
   return {
-    voice, turn_detection: { type: "server_vad" },
+    /* Turn detection: xAI's default waits only 200 ms of silence before
+       deciding Tahir has finished, which cuts him off mid-thought; 450 ms
+       still answers quickly.  To be tuned by ear on his phone. */
+    voice, turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 450 },
     audio: { input: { format: { type: "audio/pcm", rate: 24000 } }, output: { format: { type: "audio/pcm", rate: 24000 } } },
     instructions: [
-      "You are the voice of ROYAL, the private intelligence of The House of Royal T, speaking with Tahir, its founder.",
-      "Manner: calm, warm, measured, confident, brief. Natural pauses. No jokes unless Tahir jokes. No accent affectation.",
+      identityPrompt(),
+      "VOICE: You are speaking aloud. Calm, warm, measured, confident, brief. Natural pauses. One or two sentences unless Tahir asks for more; the details are on his screen. No jokes unless Tahir jokes. No accent affectation.",
+      "When something needs checking, say a two or three word acknowledgement first (\"I'll check.\", \"One moment.\") and then call ask_royal. Never say it worked before ask_royal says so.",
       "For anything about the House, clients, projects, money, production, policy, research, people, companies, drafts, sending, or any action, call ask_royal with Tahir's exact words, then say what it returns in your own brief words.",
       "Never answer those from your own knowledge. Never say something was sent, done or approved unless ask_royal says so. Approvals happen on screen, never by voice.",
       "If Tahir interrupts, stop and listen. Keep answers short unless he asks for more.",

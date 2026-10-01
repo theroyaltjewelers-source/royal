@@ -14,6 +14,10 @@ Read this before changing anything.
 
 **The calculator's rules stay in the calculator.** ROYAL never recomputes price, margin, value or runway. It reads what the House API sends.
 
+**ROYAL speaks in the first person.** "I found", never "ROYAL found", in every answer, error and spoken line. One identity (`core/identity.js`) is the first block of every model prompt; the House's words come from `core/house_language.js`, each with a House source. A test fails on third person.
+
+**Questions about ROYAL's own team are answered from its records.** The agent activity ledger, AgentTasks and bot feeds, never web research, never a bot vouching for itself. One specialist failing never takes down the turn; every cancellation has a reason.
+
 **Realms do not mix.** Business specialists cannot read personal domains. Tahir & Co. is not Royal T.
 
 **No secrets anywhere but the server environment.** Not in `web/`, not in logs, not in model prompts, not in responses.
@@ -75,3 +79,9 @@ Read this before changing anything.
 (c) Waiting times are measured from the last edit and labelled INFERENCE, until the calculator records stage timestamps.
 
 (d) No correction store, no evaluation job, no scheduler, and no personal-realm connectors yet.
+
+(e) Model text does not stream to the screen yet; the voice streams by sentence. Live latency (reasoning effort, cache hits) is measured with `npm run bench` against the real server, not in tests. See `docs/architecture/ROYAL_PERFORMANCE_AUDIT.md`.
+
+(g) Bot self-reports are not yet cross-checked against records; the daily review marks them unverified. Trend analytics (cycle time, vendor lateness, conversion) need history the calculator does not send yet. See `docs/architecture/ROYAL_FULL_SYSTEM_AUDIT.md`.
+
+(f) xAI publishes no Grok Bot API: bots are reached by webhooks Tahir configures, and a bot shows CONNECTED_VERIFIED only after a real round trip (`ROYAL_GROK_BOT_CONNECTIVITY.md`).

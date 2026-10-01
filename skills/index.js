@@ -13,6 +13,10 @@ import { executive, needsTahir, byAttention } from "../core/attention.js";
 import { money, plural, daysBetween, parseDate, stableHash } from "../core/util.js";
 import { diffSnapshots } from "../realms/business/royal-t/changes.js";
 import { draftFor } from "./drafts.js";
+import { describeSelf, greetingLine } from "../core/identity.js";
+import { definitionQuery } from "../core/house_language.js";
+import { objectiveWords as objectiveWordsFor } from "../core/agent_ledger.js";
+import { congruence } from "../core/congruence.js";
 
 const ALL = ["ace", "grace", "ledger", "forge"];
 
@@ -31,13 +35,25 @@ async function gather(ctx, agents) {
   return { results, findings };
 }
 
+/* A specialist this answer depends on didn't finish (timed out, failed,
+   returned something invalid).  Say which and why, and keep the turn: never
+   fill the gap with zeros or empty lists, which would read as facts. */
+const WHY = { TIMEOUT: "didn't finish in time", INVALID_RESULT: "returned something I couldn't use", ERROR: "hit an error", NOT_CONNECTED: "isn't connected" };
+function unavailable(results, needs) {
+  const down = needs.filter((a) => results[a] && results[a].status !== RUN_STATUS.NOT_CONNECTED && !results[a].data);
+  if (!down.length) return null;
+  const why = (a) => { const s = String(results[a].summary || ""); return /in time/.test(s) ? WHY.TIMEOUT : /invalid/.test(s) ? WHY.INVALID_RESULT : WHY.ERROR; };
+  return { status: RUN_STATUS.PARTIAL, summary: down.map((a) => a.toUpperCase() + " " + why(a)).join(", and ") + ", so I can't give you that answer right now without guessing. Asking again usually works; the rest of what I know is unchanged.",
+    findings: needs.filter((a) => results[a] && results[a].data).flatMap((a) => results[a].findings || []), surface: { type: "text" } };
+}
+
 function notConnected(results) {
   return Object.values(results).some((r) => r.status === RUN_STATUS.NOT_CONNECTED);
 }
 
 function calcDown(ctx) {
-  return { status: RUN_STATUS.NOT_CONNECTED, summary: "ROYAL cannot see the calculator, so it cannot answer from verified records. No conclusion was drawn.",
-    findings: [], surface: { type: "not_connected", domain: "royal_t", detail: "Open the calculator while signed in; it sends its state to ROYAL." } };
+  return { status: RUN_STATUS.NOT_CONNECTED, summary: "I can't see the calculator, so I can't answer from verified records. I haven't drawn any conclusion.",
+    findings: [], surface: { type: "not_connected", domain: "royal_t", detail: "Open the calculator while signed in; it sends its state to me." } };
 }
 
 async function openDecisions(ctx) { return ctx.decisions.list({ status: DS.OPEN }); }
@@ -58,6 +74,7 @@ function skill(m, run) { SKILLS[m.id] = { ...m, run }; }
    specialists as every other answer; nothing here is decorative. */
 skill(meta("home_status", "Home Status", ALL, { purpose: "The command screen: House status, systems, and the three counts." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const ds = await openDecisions(ctx);
   const domains = ctx.domains.filter((d) => d.realm === "BUSINESS");
   const provider = ctx.provider.status();
@@ -82,6 +99,7 @@ skill(meta("home_status", "Home Status", ALL, { purpose: "The command screen: Ho
    state; nothing is decorative.  When something cannot be seen, it says so. */
 skill(meta("command_center", "Command Center", ALL, { purpose: "The home screen: House status, systems, and the three numbers that matter." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const dsRaw = await openDecisions(ctx);
   const calc = await ctx.connector.status(ctx.now);
   const prov = ctx.provider.status();
@@ -148,6 +166,7 @@ skill(meta("can_i_step_away", "Can I Step Away?", ALL, { purpose: "Whether Tahir
 skill(meta("state_of_house", "State of the House", ALL, { purpose: "One synthesised picture of the business, not a database dump." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ledger", "grace", "ace"]); if (miss) return miss; }
   const ds = await openDecisions(ctx);
   const ex = executive(findings);
   const urgent = ex.filter((i) => i.priority === P.P0 || i.priority === P.P1);
@@ -169,6 +188,7 @@ skill(meta("state_of_house", "State of the House", ALL, { purpose: "One synthesi
 /* --------------------------------------------------- morning briefing --- */
 skill(meta("morning_briefing", "Morning Briefing", ALL, { purpose: "The structured executive briefing. Empty sections are left out." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ALL);
+  { const miss = unavailable(results, ["grace", "ledger"]); if (miss) return miss; }
   const dsRaw = await openDecisions(ctx);
   if (notConnected(results)) {
     const c = calcDown(ctx);
@@ -221,6 +241,7 @@ function waitItem(w) {
 skill(meta("who_owes_us", "Cash Arrival Review", ["ledger"], { purpose: "Who owes the House, ordered by what matters.", sources: ["RECEIVABLE", "PAYMENT"] }), async (ctx) => {
   const { results } = await gather(ctx, ["ledger"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ledger"]); if (miss) return miss; }
   const L = results.ledger.data;
   const items = L.debtors.map((d) => ({ id: "rcv_" + d.entity.id, kind: "RECEIVABLE", title: d.entity.client_name + ": " + money(d.outstanding),
     detail: d.entity.name + ", at " + d.stage + (d.finished ? ". The piece is finished." : "."), entity: d.entity, amount: d.outstanding,
@@ -234,6 +255,7 @@ skill(meta("who_owes_us", "Cash Arrival Review", ["ledger"], { purpose: "Who owe
 skill(meta("waiting_for", "Waiting-For Audit", ["grace"], { purpose: "Every structured dependency, with how long and who owns it." }), async (ctx) => {
   const { results } = await gather(ctx, ["grace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const stored = (await ctx.store.list("waiting")).map((r) => r.data).filter((w) => !w.resolved_at);
   const items = results.grace.data.waiting.map(waitItem).concat(stored.map((w) => ({ id: w.id, kind: "WAITING", title: "Waiting on " + w.waiting_for_entity, detail: w.reason || "", priority: P.P3, risk: R.GREEN, need: N.MONITOR, owner: w.owner, evidence: { label: E.REPORTED_UNVERIFIED, source: "royal.store" } }))).sort(byAttention);
   const over = items.filter((i) => i.need === N.DELEGATE).length;
@@ -245,6 +267,7 @@ skill(meta("waiting_for", "Waiting-For Audit", ["grace"], { purpose: "Every stru
 skill(meta("commitments", "Commitment Audit", ["grace"], { purpose: "What the House has promised, and what is due or overdue.", sources: ["COMMITMENT"] }), async (ctx) => {
   const { results } = await gather(ctx, ["grace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const stored = (await ctx.store.list("commitments")).map((r) => r.data);
   const all = results.grace.data.commitments.concat(stored);
   const live = all.filter((c) => [CS.OPEN, CS.DUE_SOON, CS.OVERDUE].indexOf(c.status) >= 0).sort((a, b) => (a.due_at || Infinity) - (b.due_at || Infinity));
@@ -253,7 +276,7 @@ skill(meta("commitments", "Commitment Audit", ["grace"], { purpose: "What the Ho
   const items = shown.map((c) => ({ id: c.id, kind: "COMMITMENT", title: c.description, detail: "Made by " + c.made_by + " to " + c.made_to + ". " + (c.status === CS.OVERDUE ? "Overdue." : c.status === CS.DUE_SOON ? "Due soon." : "Open."),
     entity: c.project_id ? { type: "project", id: c.project_id } : null, due_at: c.due_at, priority: c.status === CS.OVERDUE ? P.P1 : c.status === CS.DUE_SOON ? P.P2 : P.P4,
     risk: c.status === CS.OVERDUE ? R.RED : c.status === CS.DUE_SOON ? R.YELLOW : R.GREEN, need: c.status === CS.OVERDUE ? N.DECIDE : N.MONITOR, owner: c.owner, evidence: c.evidence }));
-  return { summary: mine && !items.length ? "ROYAL has no record of commitments you made personally. Only recorded commitments and project target dates are tracked." :
+  return { summary: mine && !items.length ? "I have no record of commitments you made personally. Only recorded commitments and project target dates are tracked." :
       items.length ? plural(items.length, "open commitment") + "; " + items.filter((i) => i.priority === P.P1).length + " overdue." : "No open commitments on record.",
     findings: items, surface: { type: "commitments", items } };
 });
@@ -262,6 +285,7 @@ skill(meta("commitments", "Commitment Audit", ["grace"], { purpose: "What the Ho
 skill(meta("production_status", "Production Risk Audit", ["grace", "ledger"], { purpose: "Production state, exceptions first." }), async (ctx) => {
   const { results, findings } = await gather(ctx, ["grace", "ledger"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const ex = executive(findings).filter((i) => i.agent === "grace" || /PRODUCTION/.test(i.code || ""));
   const prod = results.grace.data.in_production;
   const healthy = prod.filter((p) => !ex.some((i) => i.entity && i.entity.id === p.id));
@@ -294,12 +318,14 @@ skill(meta("revenue_leakage", "Revenue Leakage Review", ["ledger"], { purpose: "
 skill(meta("sales_pipeline", "Sales Pipeline", ["ace"], { purpose: "Open leads and what is stalled." }), async (ctx) => {
   const { results } = await gather(ctx, ["ace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["ace"]); if (miss) return miss; }
   return { summary: results.ace.summary, findings: results.ace.findings, surface: { type: "pipeline", leads: results.ace.data.pipeline, items: results.ace.findings } };
 });
 
 /* ----------------------------------------------------- system status --- */
 skill(meta("system_status", "System Status", ["forge"], { purpose: "Connections, freshness and integrity.", sources: ["SOFTWARE_STATUS"] }), async (ctx) => {
   const { results } = await gather(ctx, ["forge"]);
+  { const miss = unavailable(results, ["forge"]); if (miss) return miss; }
   return { summary: results.forge.summary + " Language provider: " + (ctx.provider.status().status === "CONNECTED" ? "connected." : "not connected."),
     findings: results.forge.findings, surface: { type: "systems", calculator: results.forge.data.calculator, provider: ctx.provider.status(), domains: ctx.domains, items: results.forge.findings } };
 });
@@ -328,6 +354,7 @@ skill(meta("project_status", "Project Status", ["grace", "ledger", "ace"], { pur
   if (!p) return { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "Which commission do you mean?", findings: [], surface: { type: "clarify", candidates: [] } };
   const { results, findings } = await gather(ctx, ["grace", "ledger", "ace"]);
   if (notConnected(results)) return calcDown(ctx);
+  { const miss = unavailable(results, ["grace"]); if (miss) return miss; }
   const mine = findings.filter((i) => i.entity && i.entity.id === p.id).sort(byAttention);
   const waiting = results.grace.data.waiting.filter((w) => w.project_id === p.id);
   const cmts = results.grace.data.commitments.filter((c) => c.project_id === p.id);
@@ -374,7 +401,7 @@ skill(meta("handle_it", "Handle It", ALL, { purpose: "Turn the last set of findi
         args: { project_id: i.entity && i.entity.id, draft },
         decision: { title: "Send " + draft.purpose + " to " + ((i.entity && i.entity.client_name) || "the client"), description: draft.body,
           related_project_id: i.entity && i.entity.id, related_client_id: i.entity && i.entity.client_id, priority: i.priority, risk: i.risk,
-          facts: [i.detail], unknowns: ["Whether the client has already been contacted outside ROYAL"], recommended_option: "APPROVE",
+          facts: [i.detail], unknowns: ["Whether the client has already been contacted some other way"], recommended_option: "APPROVE",
           reasoning_summary: "Drafted from verified calculator state. It states no new date or price.", financial_impact: i.amount || null,
           expected_result: "The client receives this message.", source: "calculator", dedupe_key: "send:" + i.id } });
       (r.status === "PENDING_APPROVAL" ? pending : refused).push({ item: i, result: r });
@@ -388,8 +415,8 @@ skill(meta("handle_it", "Handle It", ALL, { purpose: "Turn the last set of findi
     (r.status === "OK" ? done : r.status === "PENDING_APPROVAL" ? pending : refused).push({ item: i, result: r });
   }
   return {
-    summary: [done.length ? plural(done.length, "task") + " created" : "", pending.length ? plural(pending.length, "item") + " waiting on your approval" : "", refused.length ? plural(refused.length, "item") + " ROYAL could not act on" : ""].filter(Boolean).join("; ") + ". Nothing was sent to a client.",
-    findings: [], surface: { type: "handled", done, pending, refused, verification: "Each item clears when the calculator's records change; ROYAL rechecks at the next reading." } };
+    summary: [done.length ? plural(done.length, "task") + " created" : "", pending.length ? plural(pending.length, "item") + " waiting on your approval" : "", refused.length ? plural(refused.length, "item") + " I couldn't act on" : ""].filter(Boolean).join("; ") + ". Nothing was sent to a client.",
+    findings: [], surface: { type: "handled", done, pending, refused, verification: "Each item clears when the calculator's records change; I recheck at the next reading." } };
 });
 
 /* ------------------------------------------------ conversational follow-ups --- */
@@ -440,7 +467,7 @@ skill(meta("send_pending", "Send the Draft", [], { purpose: "Send the message un
     args: { project_id: pd.project_id, draft: { purpose: pd.purpose, body: pd.body } },
     decision: { title: "Send " + pd.purpose + " to " + pd.client_name, description: pd.body, related_project_id: pd.project_id, related_client_id: pd.client_id,
       priority: P.P2, risk: R.YELLOW, recommended_option: "APPROVE", reasoning_summary: "Prepared by " + pd.agent.toUpperCase() + " from verified calculator state. It states no new date or price.",
-      facts: ["Prepared in this conversation at your request."], unknowns: ["Whether the client has been contacted outside ROYAL"],
+      facts: ["Prepared in this conversation at your request."], unknowns: ["Whether the client has been contacted some other way"],
       financial_impact: pd.amount || null, expected_result: "The client receives this message.", source: "calculator", dedupe_key: "send:" + pd.project_id + ":" + stableHash([pd.purpose, pd.body]) } });
   if (r.status !== "PENDING_APPROVAL")
     return { status: RUN_STATUS.OK, summary: "I can't send that: " + (r.reason || r.status) + ". Nothing was sent.", findings: [], surface: { type: "text" } };
@@ -463,7 +490,7 @@ skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own doma
   const ds = ctx.domains.filter((d) => d.realm === "PERSONAL");
   const connected = ds.filter((d) => d.status === "CONNECTED");
   return { status: connected.length ? RUN_STATUS.OK : RUN_STATUS.NOT_CONNECTED,
-    summary: connected.length ? "Personal: " + connected.map((d) => d.name).join(", ") + " connected." : "Nothing personal is connected yet. ROYAL won't guess at your calendar, wealth or tasks, and your business records are never used here.",
+    summary: connected.length ? "Personal: " + connected.map((d) => d.name).join(", ") + " connected." : "Nothing personal is connected yet. I won't guess at your calendar, wealth or tasks, and your business records are never used here.",
     findings: [], surface: { type: "command_center", realm: "PERSONAL", level: connected.length ? "NOMINAL" : "OFFLINE",
       headline: connected.length ? "Personal systems online." : "Nothing personal is connected yet.",
       prompt: connected.length ? "What do you need?" : "Tell me what to connect first: calendar, tasks or wealth.",
@@ -472,7 +499,7 @@ skill(meta("personal", "Personal Intelligence", [], { purpose: "Tahir's own doma
 });
 skill(meta("other_business", "Other Business Lines", [], { purpose: "Tahir & Co. and Gold Buy." }), async (ctx) => {
   const ds = ctx.domains.filter((d) => ["tahir_and_co", "gold_buy"].indexOf(d.id) >= 0);
-  return { status: RUN_STATUS.NOT_CONNECTED, summary: ds.map((d) => d.name).join(" and ") + " are not connected to ROYAL. Their records are separate from Royal T and ROYAL won't mix them.",
+  return { status: RUN_STATUS.NOT_CONNECTED, summary: ds.map((d) => d.name).join(" and ") + " are not connected to me. Their records are separate from Royal T and I won't mix them.",
     findings: [], surface: { type: "not_connected", realm: "BUSINESS", domains: ds } };
 });
 
@@ -487,3 +514,163 @@ skill(meta("other_business", "Other Business Lines", [], { purpose: "Tahir & Co.
 export function skillCatalog() {
   return Object.values(SKILLS).map(({ run, ...m }) => m);
 }
+
+/* ---------------------------------------------------------- fast path --- */
+/* Greetings, "who are you", thanks and House definitions: answered from
+   ROYAL's identity, the live connection state and the House language, with
+   no model call.  Both realms; the Personal answers never touch business
+   records. */
+function liveState(ctx) {
+  const d = (id) => (ctx.domains || []).find((x) => x.id === id);
+  const on = (id) => !!(d(id) && d(id).status === "CONNECTED");
+  const active = ctx.registry ? ctx.registry.specialists().filter((a) => a.status === "ACTIVE").map((a) => a.id) : [];
+  return { calculator: on("royal_t"), research: on("world"), model: !!(ctx.provider && ctx.provider.status().status !== "NOT_CONNECTED"), specialists: active,
+    personal_connected: (ctx.domains || []).filter((x) => x.realm === "PERSONAL" && x.status === "CONNECTED").map((x) => x.name) };
+}
+const fastMeta = (id, name, realm) => meta(id, name, [], { purpose: name + ", answered at once with no model call.", sources: [], realm });
+
+skill(fastMeta("greeting", "Greeting", "BOTH"), async (ctx) => {
+  let line = greetingLine(ctx.now);
+  /* On the Business side, with the calculator connected, the greeting carries
+     the one thing worth knowing: how much needs Tahir, from the records. */
+  if (ctx.realm !== "PERSONAL" && liveState(ctx).calculator && SKILLS.what_needs_me) {
+    const w = await SKILLS.what_needs_me.run(ctx);
+    if (w && w.status !== RUN_STATUS.NOT_CONNECTED && w.summary) line += " " + w.summary;
+  }
+  return { summary: line, findings: [], surface: { type: "text" } };
+});
+skill(fastMeta("identity", "Who ROYAL is", "BOTH"), async (ctx) => ({ summary: describeSelf(liveState(ctx), { realm: ctx.realm || "BUSINESS" }), findings: [], surface: { type: "text" } }));
+skill(fastMeta("thanks", "Thanks", "BOTH"), async () => ({ summary: "Anytime.", findings: [], surface: { type: "text" } }));
+skill(fastMeta("house_term", "House language", "BUSINESS"), async (ctx) => {
+  const q = definitionQuery(ctx.text);
+  if (!q) return { summary: "I don't have a House definition for that.", findings: [], surface: { type: "text" } };
+  const lines = q.terms.map((e) => e.say + " is " + e.def + "." + (e.confirm ? " You haven't confirmed " + e.confirm + " yet." : ""));
+  for (const u of q.unknown) lines.push("I don't have a House definition for \u201c" + u + "\u201d.");
+  return { summary: lines.join(" "), findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL", sources: q.terms.map((e) => e.source) } };
+});
+
+/* --------------------------------------------------- agent activity --- */
+/* "What did each Bot do today?", "What did ACE do?", "What are you working
+   on?": answered from ROYAL's own records (core/agent_ledger.js), never by
+   asking the bots to vouch for themselves and never by searching the web.
+   Each specialist is read on its own; one that cannot be read is said so
+   and the rest are still reported.  A Grok Bot's own posts are REPORTED,
+   not verified. */
+const plainText = (s, n = 140) => String(s || "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
+const countWords = (n, one, many) => n + " " + (n === 1 ? one : many);
+
+export function agentsNamed(text) {
+  const t = String(text || "");
+  const ids = [];
+  for (const [id, re] of [["ace", /\bace\b/i], ["grace", /\bgrace\b/i], ["ledger", /\bledger\b/i], ["forge", /\bforge\b/i], ["house", /\bHOUSE\b|\bhouse (bot|agent)\b/]]) if (re.test(t)) ids.push(id);
+  return ids;
+}
+
+function agentLine(a, objectiveWords) {
+  if (a.error) return a.name + ": I couldn't read its record (" + a.error + ").";
+  const parts = [];
+  const n = a.native;
+  if (n && n.runs) {
+    const kinds = Object.entries(n.objectives || {}).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, c]) => objectiveWords(k) + (c > 1 ? " (" + c + ")" : "")).join(", ");
+    const bad = [n.timed_out ? countWords(n.timed_out, "timed out", "timed out") : "", n.failed ? n.failed + " failed" : ""].filter(Boolean).join(", ");
+    parts.push("worked " + countWords(n.runs, "request", "requests") + " for you: " + kinds + (bad ? "; " + bad : "; all finished"));
+  }
+  const d = a.delegated;
+  if (d && d.length) {
+    const by = (s) => d.filter((t) => t.status === s).length;
+    const bits = [["REPORTED_COMPLETE", "reported done"], ["VERIFIED_COMPLETE", "verified done"], ["IN_PROGRESS", "in progress"], ["ASSIGNED", "assigned"], ["WAITING", "waiting"], ["FAILED", "failed"], ["CANCELLED", "cancelled"]]
+      .map(([s, w]) => (by(s) ? by(s) + " " + w : "")).filter(Boolean).join(", ");
+    parts.push("of " + countWords(d.length, "task", "tasks") + " I gave its Grok Bot: " + bits);
+  }
+  if (a.feed && a.feed.error) parts.push("I couldn't read its Grok Bot's feed (" + a.feed.error + ")");
+  else if (a.feed && a.feed.length) {
+    const last = a.feed[a.feed.length - 1];
+    parts.push("its Grok Bot posted " + countWords(a.feed.length, "update", "updates") + " (reported, not verified); latest: “" + plainText(last.content_markdown) + "”");
+  }
+  if (!parts.length) {
+    const why = a.id === "house" ? " HOUSE has no native runtime yet" + (a.bot ? ", and its Grok Bot is " + String(a.bot.connection).toLowerCase().replace(/_/g, " ") : ", and no Grok Bot is set up for it") + "." : "";
+    return a.name + ": nothing recorded today." + why;
+  }
+  return a.name + " " + parts.join("; ") + ".";
+}
+
+skill(meta("agent_activity", "Agent daily activity", ALL, { purpose: "What each specialist worked on today, from ROYAL's own records.", sources: [] }), async (ctx) => {
+  if (!ctx.ledger) return { status: RUN_STATUS.NOT_CONNECTED, summary: "My activity record isn't available on this server.", findings: [], surface: { type: "text" } };
+  const named = agentsNamed(ctx.text);
+  const review = await ctx.ledger.review({ agents: named.length ? named : undefined, tasks: ctx.tasks, bridge: ctx.bridge, realm: "BUSINESS" });
+  const lines = review.agents.map((a) => agentLine(a, objectiveWordsFor));
+  const failed = review.agents.flatMap((a) => (a.delegated || []).filter((t) => t.status === "FAILED").map((t) => a.name + ": " + plainText(t.objective, 80)));
+  const unreadable = review.agents.filter((a) => a.error || (a.feed && a.feed.error)).map((a) => a.name);
+  const reported = review.agents.filter((a) => a.feed && a.feed.length).map((a) => a.name);
+  const head = named.length === 1 ? "I checked " + review.agents[0].name + "'s record for today." : "I checked today's record for " + (named.length ? "them" : "all five") + ".";
+  const tail = (failed.length ? " Needs you: " + failed.length + " delegated " + (failed.length === 1 ? "task" : "tasks") + " failed." : "") +
+    (reported.length ? " What " + reported.join(" and ") + " posted is their own report; I haven't verified it." : "") +
+    (unreadable.length ? " I couldn't read " + unreadable.join(" and ") + " fully, so that part is missing." : "");
+  return { status: unreadable.length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: head + " " + lines.join(" ") + tail, findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" },
+    data: { day: review.day, agents: review.agents.map((a) => ({ id: a.id, runs: a.native ? a.native.runs : 0, tasks: (a.delegated || []).length, reported: a.feed && a.feed.length ? a.feed.length : 0 })) } };
+});
+
+/* "What are you working on?": the delegated work that is actually open. */
+skill(meta("active_work", "Active work", [], { purpose: "What is running, waiting or failed right now, from the task record.", sources: [] }), async (ctx) => {
+  if (!ctx.tasks) return { summary: "I'm not running anything in the background.", findings: [], surface: { type: "text" } };
+  const all = await ctx.tasks.list();
+  const open = all.filter((t) => ["ASSIGNED", "IN_PROGRESS", "WAITING"].indexOf(t.status) >= 0);
+  const dayAgo = (ctx.now || Date.now()) - 86400000;
+  const recent = all.filter((t) => t.created_at >= dayAgo && ["REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED"].indexOf(t.status) >= 0);
+  if (!open.length && !recent.length) return { summary: "Nothing is running in the background right now. Everything I've been asked today has been answered.", findings: [], surface: { type: "text" } };
+  const say = (t) => t.agent.toUpperCase() + " on “" + plainText(t.objective, 70) + "”" + (t.overdue ? " (past its deadline)" : "");
+  const parts = [];
+  if (open.length) parts.push("I have " + open.map(say).join(", ") + " in progress.");
+  const done = recent.filter((t) => t.status !== "FAILED"), bad = recent.filter((t) => t.status === "FAILED");
+  if (done.length) parts.push(countWords(done.length, "task", "tasks") + " came back in the last day (reported, not verified).");
+  if (bad.length) parts.push(countWords(bad.length, "task", "tasks") + " failed: " + bad.map(say).join(", ") + ".");
+  return { summary: parts.join(" "), findings: [], surface: { type: "text" } };
+});
+
+/* "Diagnose yourself", "What systems are actually working?" */
+skill(meta("self_diagnostic", "Self-diagnostic", [], { purpose: "Every part of ROYAL with its real state and the evidence for it.", sources: [] }), async (ctx) => {
+  if (!ctx.diagnostics) return { status: RUN_STATUS.NOT_CONNECTED, summary: "My diagnostics aren't available here.", findings: [], surface: { type: "text" } };
+  const d = await ctx.diagnostics();
+  const by = (s) => d.filter((x) => x.state === s);
+  const name = (x) => x.system + " (" + x.evidence + ")";
+  const parts = ["I checked " + d.length + " parts of myself."];
+  if (by("HEALTHY").length) parts.push("Working: " + by("HEALTHY").map((x) => x.system).join(", ") + ".");
+  if (by("DEGRADED").length) parts.push("Degraded: " + by("DEGRADED").map(name).join("; ") + ".");
+  if (by("FAILED").length) parts.push("Failed: " + by("FAILED").map(name).join("; ") + ".");
+  if (by("NOT_CONFIGURED").length) parts.push("Not set up: " + by("NOT_CONFIGURED").map(name).join("; ") + ".");
+  return { status: by("FAILED").length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: parts.join(" "), findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" }, data: { checks: d } };
+});
+
+/* ------------------------------------------------------ cash analysis --- */
+/* "Why have we been tight on cash?" from the House's real numbers: LEDGER's
+   read of the projects and the calculator's own treasury (its runway is its
+   calculation; ROYAL never recomputes it).  Fact, analysis and
+   recommendation are kept apart, and the limits of what ROYAL can see are
+   said: no bank feed, no expenses, no history by month. */
+skill(meta("cash_analysis", "Cash position and pressure", ["ledger"], { purpose: "Where the cash is, and what is holding it, from the calculator's money records." }), async (ctx) => {
+  const { results } = await gather(ctx, ["ledger"]);
+  if (notConnected(results)) return calcDown(ctx);
+  const l = results.ledger && results.ledger.data;
+  if (!l) return { status: RUN_STATUS.FAILED, summary: "LEDGER didn't return the money record, so I can't answer that yet.", findings: [], surface: { type: "text" } };
+  const tr = l.treasury || null;
+  const finished = l.debtors.filter((d) => d.finished).reduce((a, d) => a + d.outstanding, 0);
+  const unfundedProd = l.unfunded;
+  const lateBills = tr && tr.inbox ? tr.inbox.filter((i) => i.sec === "payables") : [];
+  const fact = tr
+    ? "The calculator shows " + money(tr.available) + " available, " + money(tr.receivable) + " owed to us and " + money(tr.payable) + " we owe vendors" + (tr.runway_days != null ? ", with " + tr.runway_days + " days of runway by its calculation" : "") + "."
+    : money(l.receivable) + " is owed to us across " + plural(l.debtors.length, "commission") + ". The calculator didn't send its treasury, so I can't see available cash.";
+  const analysis = [];
+  if (finished > 0) analysis.push(money(finished) + " of what we're owed is on finished pieces, so it's collectable now without more work");
+  if (unfundedProd > 0) analysis.push(money(unfundedProd) + " of production is running ahead of what clients have paid toward it");
+  if (lateBills.length) analysis.push(plural(lateBills.length, "vendor bill") + " " + (lateBills.length === 1 ? "is" : "are") + " overdue (" + lateBills.map((b) => b.title.replace(/^Overdue to /, "") + " " + money(b.amount)).join(", ") + ")");
+  const rec = finished > 0 ? "If cash is the priority, I'd collect the finished-piece balances first: they need no more work." : unfundedProd > 0 ? "If cash is the priority, I'd collect toward production that's running ahead before starting more." : null;
+  const limits = "I can't see the bank, expenses or month-by-month history, so this is the position now, not the full story of why it got tight.";
+  /* Where the record disagrees with itself, say so rather than pick a side. */
+  const latest = ctx.connector ? await ctx.connector.latest() : null;
+  const money_conflicts = latest ? congruence(latest.snapshot).issues.filter((i) => i.kind === "SOURCE_CONFLICT" && /RECEIVABLE|PAYABLE/.test(i.code)) : [];
+  const nc = money_conflicts.length;
+  const conflictLine = nc ? (nc === 1 ? "One thing doesn't add up: " : (nc === 2 ? "Two" : nc) + " things don't add up: ") +
+    money_conflicts.map((i) => i.text).join(" ") + " I haven't picked one side; the calculator's records should be checked." : "";
+  return { status: RUN_STATUS.OK, summary: [fact, analysis.length ? "What it means: " + analysis.join("; ") + "." : "", conflictLine, rec ? "My recommendation: " + rec.replace(/^If/, "if") : "", limits].filter(Boolean).join(" "),
+    findings: (results.ledger.findings || []).slice(0, 8), surface: { type: "text", label: "VERIFIED" } };
+});

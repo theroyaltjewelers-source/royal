@@ -24,14 +24,20 @@ export const NAMESPACES = Object.freeze({
   "agents/": "agents",
   "skills/": "skills",
   "training/": "real_cases",
+  "knowledge/": "fabric",   /* the executive knowledge fabric: general reference, below House documents */
 });
+export const HOUSE_NAMESPACES = ["company", "policies", "agents", "skills", "real_cases"];
 
-const STOP = new Set("a an and are as at be but by can do does for from has have how i in is it its me my of on or our so that the their them then there these this to us was we what when where which who why will with you your about into than too very just also any each only own same other such no nor not".split(" "));
+const STOP = new Set("a an and are as at be but by can do does for from has have how i in is it its me my of on or our so that the their them then there these this to us was we what when where which who why will with you your about into than too very just also any each only own same other such no nor not should would could think tell explain".split(" "));
 function stem(w) {
   return w.replace(/'s$/, "").replace(/(ies)$/, "y").replace(/(sses)$/, "ss").replace(/([^s])s$/, "$1").replace(/(ing|ed)$/, "").replace(/(ment|ness)$/, "");
 }
+/* Abbreviations that would vanish when split ("a/r" becomes two letters). */
+const ABBREV = [[/\ba\/r\b/g, " receivable "], [/\ba\/p\b/g, " payable "], [/\bcogs\b/g, " cost goods sold "], [/\bp&l\b/g, " income statement "], [/\broi\b/g, " roi return "], [/\broas\b/g, " roas advertising "]];
 export function terms(text) {
-  return String(text || "").toLowerCase().replace(/[^a-z0-9%$\s-]/g, " ").split(/[\s-]+/).filter((w) => w.length > 1 && !STOP.has(w)).map(stem).filter(Boolean);
+  let s = String(text || "").toLowerCase();
+  for (const [re, w] of ABBREV) s = s.replace(re, w);
+  return s.replace(/[^a-z0-9%$\s-]/g, " ").split(/[\s-]+/).filter((w) => w.length > 1 && !STOP.has(w)).map(stem).filter(Boolean);
 }
 
 function namespaceOf(rel) {
@@ -91,7 +97,7 @@ export function chunkMarkdown(md, { path, namespace, version, updated_at }) {
 export class KnowledgeEngine {
   constructor() { this.chunks = []; this.df = new Map(); this.avgLen = 0; this.docs = new Map(); }
 
-  async ingestDir(root, { include = ["company", "agents", "skills", "training"] } = {}) {
+  async ingestDir(root, { include = ["company", "agents", "skills", "training", "knowledge"] } = {}) {
     const files = [];
     for (const dir of include) {
       let names = []; try { names = await readdir(join(root, dir)); } catch (_) { continue; }
@@ -108,10 +114,18 @@ export class KnowledgeEngine {
   add(path, md, { updated_at = Date.now(), namespace = namespaceOf(path) } = {}) {
     const version = "v-" + stableHash(md).slice(0, 10);
     this.chunks = this.chunks.filter((c) => c.path !== path);
-    const cs = chunkMarkdown(md, { path, namespace, version, updated_at });
-    cs.forEach((c) => { c.terms = terms(c.section + " " + (c.policy_id || "") + " " + c.text); });
+    let cs = chunkMarkdown(md, { path, namespace, version, updated_at });
+    /* A reference document's metadata describes it; it is kept with the
+       document, not searched as if it were an answer. */
+    let meta = null;
+    if (namespace === "fabric") {
+      const m = cs.find((c) => /^metadata$/i.test(c.section || ""));
+      if (m) meta = Object.fromEntries(m.text.split(/\.\s+(?=[a-z_]+:)/).map((p) => p.split(/:\s*/)).filter((kv) => kv.length >= 2).map(([k, ...v]) => [k.trim(), v.join(": ").replace(/\.$/, "").trim()]));
+      cs = cs.filter((c) => !/^metadata$/i.test(c.section || ""));
+    }
+    cs.forEach((c) => { c.terms = terms(c.section + " " + (c.policy_id || "") + " " + c.text); c.lower = (c.section + " " + c.text).toLowerCase().replace(/\s+/g, " "); });
     this.chunks.push(...cs);
-    this.docs.set(path, { path, namespace, version, updated_at, passages: cs.length });
+    this.docs.set(path, { path, namespace, version, updated_at, passages: cs.length, ...(meta ? { meta } : {}) });
     this._index();
     return { path, version, passages: cs.length };
   }
@@ -127,6 +141,8 @@ export class KnowledgeEngine {
   search(query, { namespaces = null, limit = 5, includeSuperseded = false, includeTraining = true } = {}) {
     const q = [...new Set(terms(query))];
     if (!q.length) return [];
+    const words = String(query).toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !STOP.has(w));
+    const phrases = words.slice(1).map((w, i) => words[i] + " " + w);
     const N = this.chunks.length, k1 = 1.4, b = 0.75;
     const scored = [];
     for (const c of this.chunks) {
@@ -146,6 +162,11 @@ export class KnowledgeEngine {
       if (matched / q.length < 0.4 || (q.length >= 3 && matched < 2)) continue;
       if (s > 0 && c.policy_id) s *= 1.25;
       if (s > 0 && c.synthetic) s *= 0.7;
+      if (s > 0 && c.namespace === "fabric") s *= 0.6;   /* House knowledge outranks the general reference */
+      /* In the reference, the query's words side by side ("opportunity cost")
+         outrank the same words scattered through a passage.  House documents
+         keep their own ranking. */
+      if (s > 0 && c.namespace === "fabric" && phrases.length && phrases.some((ph) => c.lower.indexOf(ph) >= 0)) s *= 1.6;
       if (s > 0) scored.push({ c, s });
     }
     scored.sort((a, b2) => b2.s - a.s);
@@ -154,6 +175,7 @@ export class KnowledgeEngine {
       policy_id: c.policy_id, policy_status: c.policy_status, binding: c.policy_id ? c.policy_status === "ACTIVE" : null,
       synthetic: c.synthetic, version: c.version, updated_at: c.updated_at,
       citation: c.path + (c.section ? " § " + c.section : "") + (c.policy_id ? " (" + c.policy_id + (c.policy_status ? ", " + c.policy_status : "") + ")" : ""),
+      reference: c.namespace === "fabric",
     }));
   }
 }

@@ -36,6 +36,11 @@ export const EVIDENCE = set("VERIFIED", "VERIFIED_INTERNAL", "VERIFIED_EXTERNAL"
 export const EMAIL_STATUS = set("PUBLICLY_LISTED", "PROVIDER_FOUND", "PATTERN_INFERRED", "VERIFIED_DELIVERABLE", "LIKELY_DELIVERABLE", "RISKY", "INVALID", "UNVERIFIED", "NOT_FOUND");
 
 /* Delegated work, from assignment to verified completion. */
+/* Why something stopped.  A provider timeout is not Tahir cancelling, and a
+   bot failure is not either: every cancellation and failure carries one. */
+export const CANCEL_REASON = set("USER_CANCELLED", "BARGE_IN_REPLACED_REQUEST", "PARENT_CANCELLED", "TIMEOUT", "NETWORK_FAILURE", "PROVIDER_FAILURE",
+  "BOT_FAILURE", "TOOL_FAILURE", "COMPONENT_DISPOSED", "SYSTEM_SHUTDOWN", "UNKNOWN");
+
 export const TASK_STATUS = set("ASSIGNED", "IN_PROGRESS", "WAITING", "REPORTED_COMPLETE", "VERIFIED_COMPLETE", "FAILED", "CANCELLED");
 
 /* The reasoning policy (core/intelligence/reasoning.js). */

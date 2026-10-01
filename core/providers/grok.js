@@ -24,8 +24,19 @@
 import { CONNECTION } from "../enums.js";
 import { check } from "../intelligence/jsonschema.js";
 import { parseModelJson } from "./provider.js";
+import { currentTrace, recordModelCall } from "../trace.js";
+
+/* How hard the model thinks, by ROYAL's reasoning level (core/intelligence/
+   reasoning.js): 0 to 2 (lookups, quick answers, everyday operations) low,
+   3 and 4 (deep analysis, research) medium, 5 (planning) high.  A call with
+   no level is conversation and gets low.  Reasoning models such as grok-4.3
+   default to high, which made every call, even classifying a greeting, slow. */
+export const EFFORT_BY_LEVEL = ["low", "low", "low", "medium", "medium", "high"];
+export function effortFor(level) { return level === undefined || level === null ? "low" : EFFORT_BY_LEVEL[Math.max(0, Math.min(5, level))]; }
+const REJECTS_EFFORT = /reasoning|effort/i;
 
 function clip(s, n = 240) { return String(s || "").replace(/\s+/g, " ").slice(0, n); }
+function errText(j) { return String((j && (j.error && (j.error.message || j.error) || j.message)) || ""); }
 
 export class GrokProvider {
   constructor({ apiKey, model, fastModel = null, voiceModel = "grok-voice-latest", voice = "ara", baseUrl = "https://api.x.ai/v1", fetchImpl = globalThis.fetch, timeoutMs = 45000, metrics = null }) {
@@ -40,6 +51,9 @@ export class GrokProvider {
     this.timeoutMs = timeoutMs;
     this.lastError = null;
     this.lastOkAt = null;
+    /* null until a call shows whether this model accepts reasoning effort;
+       false after it rejects it once, so no call pays for that again. */
+    this.effortOk = null;
   }
 
   status() {
@@ -61,10 +75,15 @@ export class GrokProvider {
   async _post(body, timeout, path = "/chat/completions") {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeout || this.timeoutMs);
+    /* Prompt cache affinity: one conversation's calls go to the same xAI
+       server, so its stable prefix (ROYAL's identity, the House language)
+       is served from cache instead of processed cold each turn. */
+    const t = currentTrace(), conv = t && t.conversation ? String(t.conversation).slice(0, 120) : null;
+    const headers = { "Content-Type": "application/json", Authorization: "Bearer " + this._key };
+    if (conv) { headers["x-grok-conv-id"] = conv; if (path === "/responses" && !body.prompt_cache_key) body = { ...body, prompt_cache_key: conv }; }
     try {
       const r = await this.fetch(this.baseUrl + path, {
-        method: "POST", signal: ctl.signal,
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key },
+        method: "POST", signal: ctl.signal, headers,
         body: JSON.stringify(body),
       });
       let j = null; try { j = await r.json(); } catch (_) { j = null; }
@@ -78,9 +97,18 @@ export class GrokProvider {
     const msgs = (system ? [{ role: "system", content: system }] : []).concat(messages);
     const model = this.modelFor(level), t0 = Date.now();
     try {
-      let { r, j } = await this._post({ model, messages: msgs, max_tokens }, timeout_ms);
-      if (r.status === 400) ({ r, j } = await this._post({ model, messages: msgs }, timeout_ms));
-      this._metric("complete", t0, r.ok, j && j.usage);
+      const effort = this.effortOk === false ? null : effortFor(level);
+      const req = { model, messages: msgs };
+      if (this.maxTokensOk !== false) req.max_tokens = max_tokens;
+      if (effort) req.reasoning_effort = effort;
+      let { r, j } = await this._post(req, timeout_ms);
+      /* A model that rejects an optional setting (reasoning effort, or a
+         token cap) says so once; the setting is dropped and never sent to
+         this model again, so later calls do not pay for a failed attempt. */
+      if (r.status === 400 && effort && REJECTS_EFFORT.test(errText(j))) { this.effortOk = false; delete req.reasoning_effort; ({ r, j } = await this._post(req, timeout_ms)); }
+      if (r.status === 400 && req.max_tokens !== undefined) { this.maxTokensOk = false; delete req.max_tokens; ({ r, j } = await this._post(req, timeout_ms)); }
+      if (r.ok && req.reasoning_effort) this.effortOk = true;
+      this._metric("complete", t0, r.ok, j && j.usage, req.reasoning_effort);
       if (!r.ok) {
         const why = clip((j && (j.error && (j.error.message || j.error) || j.message)) || "");
         this.lastError = "HTTP " + r.status + (why ? ": " + why : "");
@@ -96,8 +124,12 @@ export class GrokProvider {
     }
   }
 
-  _metric(kind, t0, ok, usage) {
-    if (this.metrics) this.metrics.observe("provider." + kind, Date.now() - t0, { ok: !!ok, tokens: usage ? (usage.total_tokens || (usage.input_tokens || 0) + (usage.output_tokens || 0)) : 0 });
+  _metric(kind, t0, ok, usage, effort) {
+    const ms = Date.now() - t0, tokens = usage ? (usage.total_tokens || (usage.input_tokens || 0) + (usage.output_tokens || 0)) : 0;
+    const det = usage && (usage.prompt_tokens_details || usage.input_tokens_details);
+    const cached = det ? det.cached_tokens || 0 : 0;
+    if (this.metrics) { this.metrics.observe("provider." + kind, ms, { ok: !!ok, tokens }); if (cached) this.metrics.count("provider.cached_tokens", cached); }
+    recordModelCall({ kind, ms, ok: !!ok, effort: effort || null, tokens, cached_tokens: cached });
   }
 
   /* One call to the Responses API.  Returns the text, xAI's citations and
@@ -107,13 +139,17 @@ export class GrokProvider {
     if (st.status === CONNECTION.NOT_CONNECTED) return { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", retryable: false };
     const input = (system ? [{ role: "system", content: system }] : []).concat(messages);
     const body = { model: this.modelFor(level), input };
+    const effort = this.effortOk === false ? null : effortFor(level);
+    if (effort) body.reasoning = { effort };
     if (tools && tools.length) body.tools = tools;
     if (schema) body.text = { format: { type: "json_schema", name, schema, strict: true } };
     if (include) body.include = include;
     const t0 = Date.now();
     try {
-      const { r, j } = await this._post(body, timeout_ms, "/responses");
-      this._metric(tools ? "search" : schema ? "structured" : "respond", t0, r.ok, j && j.usage);
+      let { r, j } = await this._post(body, timeout_ms, "/responses");
+      if (r.status === 400 && effort && REJECTS_EFFORT.test(errText(j))) { this.effortOk = false; delete body.reasoning; ({ r, j } = await this._post(body, timeout_ms, "/responses")); }
+      else if (r.ok && effort) this.effortOk = true;
+      this._metric(tools ? "search" : schema ? "structured" : "respond", t0, r.ok, j && j.usage, body.reasoning && body.reasoning.effort);
       if (!r.ok) {
         const why = clip((j && (j.error && (j.error.message || j.error) || j.message)) || "");
         this.lastError = "HTTP " + r.status + (why ? ": " + why : "");
@@ -186,7 +222,7 @@ export class GrokProvider {
     }
   }
 
-  /* ROYAL's spoken voice: text in, MP3 out, through xAI text to speech
+  /* ROYAL's spoken voice: text in, WAV out (24 kHz), through xAI text to speech
      (POST /v1/tts).  The same voice as realtime voice, so ROYAL sounds the
      same on every device and in both voice modes.  Returns the audio bytes;
      the key never leaves the server. */
@@ -200,8 +236,11 @@ export class GrokProvider {
     try {
       const r = await this.fetch(this.baseUrl + "/tts", {
         method: "POST", signal: ctl.signal,
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key, Accept: "audio/mpeg" },
-        body: JSON.stringify({ text: words, voice_id: voice, language: "en", output_format: { codec: "mp3", sample_rate: 44100, bit_rate: 128000 } }),
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._key, Accept: "audio/wav" },
+        /* WAV, not MP3: MP3 pads each clip with a few milliseconds of
+           silence, which would be heard as a tick between sentences when the
+           page plays them back to back. */
+        body: JSON.stringify({ text: words, voice_id: voice, language: "en", output_format: { codec: "wav", sample_rate: 24000 } }),
       });
       if (!r.ok) {
         let j = null; try { j = await r.json(); } catch (_) { j = null; }
@@ -212,7 +251,7 @@ export class GrokProvider {
       const audio = new Uint8Array(await r.arrayBuffer());
       if (!audio.length) return { ok: false, failed_because: "PROVIDER_REPLY_UNEXPECTED", retryable: true };
       if (this.metrics) this.metrics.observe("provider.speech", Date.now() - t0);
-      return { ok: true, audio, type: "audio/mpeg", voice };
+      return { ok: true, audio, type: "audio/wav", voice };
     } catch (e) {
       return { ok: false, failed_because: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK", retryable: true };
     } finally { clearTimeout(timer); }

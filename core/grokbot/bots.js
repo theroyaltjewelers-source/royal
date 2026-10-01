@@ -85,10 +85,39 @@ export function authHeaderFor(bot) {
   return [bot.header, bot.header.toLowerCase() === "authorization" ? "Bearer " + bot.key : bot.key];
 }
 
+/* Whether a bot is really reachable, from what has actually happened, never
+   from configuration alone.  There is no official Grok Bot API: a bot is
+   reached only through the webhook Tahir configured, and it answers by
+   posting to ROYAL with its own token.  So:
+
+     NOT_CONFIGURED         no webhook address and key, or a bad one
+     DISABLED               switched off
+     CONFIGURED_UNVERIFIED  configured, but no round trip has happened yet
+     CONNECTED_VERIFIED     ROYAL delivered a message to its webhook, and the
+                            bot has posted back with its own token
+     DEGRADED               it worked before, but the last delivery failed
+     AUTH_FAILED            the bot's webhook refused ROYAL's key (401 or 403)
+     UNRESPONSIVE           delivered, but no word back for 15 minutes
+     FAILED                 the last delivery failed and it never answered
+
+   `status` stays the configuration state (what may be attempted); this is
+   what is shown as the bot's connection. */
+export const UNRESPONSIVE_MS = 15 * 60000;
+export function connectionOf(bot, state = {}, now = Date.now()) {
+  if (!bot.configured) return "NOT_CONFIGURED";
+  if (!bot.enabled) return "DISABLED";
+  const seen = state.last_seen ? Date.parse(state.last_seen) : 0, sent = state.last_message_at ? Date.parse(state.last_message_at) : 0;
+  if (state.last_error && sent >= seen && /_HTTP_40[13]$/.test(state.last_error)) return "AUTH_FAILED";
+  if (state.last_error && sent >= seen) return seen ? "DEGRADED" : "FAILED";
+  if (!state.last_error && sent > seen && now - sent > UNRESPONSIVE_MS) return "UNRESPONSIVE";
+  if (seen && sent && !state.last_error) return "CONNECTED_VERIFIED";
+  return "CONFIGURED_UNVERIFIED";
+}
+
 /* The only shape that may leave the server.  Never add url, key or header. */
 export function publicBotView(bot, state = {}, extra = {}) {
   return {
-    id: bot.id, bot_id: bot.id, name: bot.name, status: bot.status, realms: [...bot.realms],
+    id: bot.id, bot_id: bot.id, name: bot.name, status: bot.status, connection: connectionOf(bot, state), realms: [...bot.realms],
     config_error: bot.configError || null,
     last_seen: state.last_seen || null, last_message_at: state.last_message_at || null, last_error: state.last_error || null,
     ...extra,

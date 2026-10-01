@@ -166,5 +166,5 @@ const R = {
 
 export function render(prim, i = 0) {
   const f = R[prim.type];
-  return f ? f(prim.data || {}, i) : R.UNKNOWN_OBJECT({ text: "Something ROYAL tried to show could not be drawn." });
+  return f ? f(prim.data || {}, i) : R.UNKNOWN_OBJECT({ text: "Something I tried to show couldn't be drawn." });
 }

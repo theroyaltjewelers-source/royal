@@ -180,13 +180,12 @@ async function speechFor(text, signal) {
   return r.ok ? r.arrayBuffer() : null;
 }
 async function askFromVoice(text) {
-  for (let i = 0; i < 40 && busy; i++) await wait(250);
   return submit(text, "voice", { speak: false });
 }
 
 function offline() {
   state.go("OFFLINE"); stage.clear();
-  stage.setCaption("ROYAL can't be reached right now. Nothing was done.", { quiet: true });
+  stage.setCaption("I can't reach my server right now. Nothing was done.", { quiet: true });
   $("retry").hidden = false;
 }
 $("retry").addEventListener("click", () => { $("retry").hidden = true; start(); });
@@ -320,9 +319,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ------------------------------------------------------------ submit --- */
-let busy = false;
+/* Turns.  A new question always goes through: it used to be dropped while
+   an earlier one was still running ("if (busy) return"), so "while ACE does
+   that, what needs me?" vanished.  Each question is a numbered turn; the
+   server answers every one, and only the newest is drawn on the stage.  An
+   older answer that arrives late is still recorded by ROYAL (and returned to
+   the realtime voice when it asked), but never overwrites the newer one. */
+let busy = 0, turn = 0;
 async function submit(text, modality, { speak = true } = {}) {
-  if (busy) return; busy = true;
+  const my = ++turn; busy++;
   voice.stopSpeaking(); voice.cancel(); sound.unlock();
   stage.setHeard(text); bump();
   if (!STATES[state.state] || state.state === "OFFLINE") state.go("AWAKE");
@@ -331,12 +336,13 @@ async function submit(text, modality, { speak = true } = {}) {
   await wait(260);
   state.go("THINKING");
   const r = await req;
-  busy = false;
+  busy = Math.max(0, busy - 1);
+  if (my !== turn) return r.ok ? r.result : null;   /* superseded on screen by a newer question */
   if (!r.ok) {
     if (r.unauthorized) { store.set("royal.session", null); TOKEN = null; state.go("OFFLINE"); return showSignIn("Your session ended. Sign in again."); }
     state.go("FAILURE", "request failed"); sound.play("failure");
     const spec = { version: 1, mode: "error", realm: REALM, tone: "attention", speech: r.message || "That didn't go through.", focus_entity: null, agents: [],
-      surfaces: [{ type: "ERROR_OBJECT", data: { attempted: "Ask ROYAL: " + text.slice(0, 200), failed_because: r.network ? "ROYAL could not be reached." : (r.message || "The request failed."), impact: "Nothing was done.", next_action: "Try again in a moment." } }] };
+      surfaces: [{ type: "ERROR_OBJECT", data: { attempted: "Ask ROYAL: " + text.slice(0, 200), failed_because: r.network ? "I couldn't reach my server." : (r.message || "The request failed."), impact: "Nothing was done.", next_action: "Try again in a moment." } }] };
     stage.show(validateSpec(spec).spec); stage.setCaption(spec.speech, { tone: "attention" });
     if (r.network) $("retry").hidden = false;
     return settle();
@@ -427,7 +433,7 @@ async function resolve(card, resolution, modified) {
   else if (d.status === "VERIFIED") line = "Done, and checked.";
   else if (d.status === "EXECUTED") line = "Done. Not yet independently checked.";
   else if (d.status === "FAILED") { line = "Approved, but carrying it out failed: " + (x.failed_because || "unknown") + "."; tone = "attention"; }
-  else if (x.result === "NO_EXECUTOR") line = "Approved and recorded. Nothing was " + (d.action && /send/.test(d.action.tool || "") ? "sent" : "carried out") + ": ROYAL can't do this itself yet, so someone on the team needs to.";
+  else if (x.result === "NO_EXECUTOR") line = "Approved and recorded. Nothing was " + (d.action && /send/.test(d.action.tool || "") ? "sent" : "carried out") + ": I can't do this myself yet, so someone on the team needs to.";
   else line = "Recorded as " + String(d.status || "").toLowerCase() + ".";
   const acts = card.querySelector(".dec-a"); if (acts) acts.remove();
   card.classList.remove("st-OPEN"); card.classList.add("st-" + (d ? d.status : "ERR"));
@@ -520,6 +526,14 @@ async function showSheet(view) {
 
 function intelLines() {
   const i = INTEL; if (!i) return "";
+  /* Measured on this device: the median time from the question to the
+     first sound, and how many gaps the voice has had. */
+  const voiceLine = () => {
+    const st = (rt && rt.pb && rt.pb.stats && rt.pb.stats.replies ? rt.pb.stats : null) || voice.stats;
+    if (!st || !st.replies) return "";
+    const f = st.first_audio_ms.slice().sort((a, b) => a - b), med = f.length ? f[Math.floor(f.length / 2)] : null;
+    return (med !== null ? " · first sound " + med + " ms" : "") + " · " + st.underruns + (st.underruns === 1 ? " gap" : " gaps");
+  };
   const row = (k, v, ok) => '<li class="' + (ok ? "ok" : "no") + '"><span>' + esc(k) + "</span><em>" + esc(v) + "</em></li>";
   const word = (x) => String(x || "unknown").toLowerCase().replace(/_/g, " ");
   return '<p class="sb-h">Intelligence</p><ul class="sb-sys">' +
@@ -529,6 +543,7 @@ function intelLines() {
     row("EMAIL VERIFICATION", word(i.contacts.verification), i.contacts.verification === "CONNECTED") +
     row("EMAIL SENDING", word(i.email.status) + " · " + word(i.sending), i.email.status === "CONNECTED" && i.sending === "ENABLED") +
     row("REALTIME VOICE", word(i.realtime_voice), i.realtime_voice === "AVAILABLE") +
+    row("ROYAL'S VOICE", word(i.spoken_voice || "DISABLED") + voiceLine(), i.spoken_voice === "AVAILABLE") +
     row("GROK BOT AGENTS", word(i.agent_orchestration), i.agent_orchestration === "ENABLED") + "</ul>";
 }
 

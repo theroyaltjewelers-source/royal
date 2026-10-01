@@ -14,6 +14,11 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&":
 const when = (t) => { try { return new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); } catch (_) { return ""; } };
 const TYPE = { outbound: "You", progress: "Working", result: "Result", alert: "Alert", message: "Message" };
 const STATUS = { CONNECTED: "Connected", NOT_CONNECTED: "Not connected", DISABLED: "Switched off" };
+/* What is shown: the bot's real connection (core/grokbot/bots.js connectionOf),
+   never a green light for configuration alone. */
+const CONNECTION = { CONNECTED_VERIFIED: "Connected, verified", CONFIGURED_UNVERIFIED: "Set up, not yet verified", DEGRADED: "Last delivery failed",
+  FAILED: "Not reachable", AUTH_FAILED: "Refusing ROYAL's key", UNRESPONSIVE: "Not answering", NOT_CONFIGURED: "Not connected", DISABLED: "Switched off" };
+const shownState = (b) => b.connection || b.status;
 
 export class BotsPanel {
   constructor({ root, api, token, realm, base = "", onOpen, onClose }) {
@@ -66,7 +71,7 @@ export class BotsPanel {
 
   _tabs() {
     const nav = this.root.querySelector(".bp-tabs"); if (!nav) return;
-    nav.innerHTML = this.bots.map((b) => '<button type="button" role="tab" data-bot="' + esc(b.id) + '" aria-selected="' + (b.id === this.active) + '" class="bp-tab st-' + esc(b.status) + (b.last_error ? " has-err" : "") + '">' +
+    nav.innerHTML = this.bots.map((b) => '<button type="button" role="tab" data-bot="' + esc(b.id) + '" aria-selected="' + (b.id === this.active) + '" class="bp-tab st-' + esc(shownState(b)) + (b.last_error ? " has-err" : "") + '">' +
       '<i aria-hidden="true"></i><span>' + esc(b.name) + "</span></button>").join("");
   }
 
@@ -109,11 +114,11 @@ export class BotsPanel {
     const body = this.root.querySelector(".bp-body"); if (!body || !bot) return;
     const canSend = bot.status === "CONNECTED";
     body.innerHTML =
-      '<div class="bp-head"><p class="bp-state st-' + esc(bot.status) + '"><i aria-hidden="true"></i>' + esc(STATUS[bot.status] || bot.status) +
+      '<div class="bp-head"><p class="bp-state st-' + esc(shownState(bot)) + '"><i aria-hidden="true"></i>' + esc(CONNECTION[bot.connection] || STATUS[bot.status] || bot.status) +
         (bot.config_error ? " · " + esc(bot.config_error.replace(/_/g, " ").toLowerCase()) : "") + '<span class="bp-live" id="bpLive"></span></p>' +
         '<p class="bp-meta">' + (bot.last_seen ? "Last heard " + esc(when(bot.last_seen)) : "Hasn't reported yet") + (bot.last_message_at ? " · last asked " + esc(when(bot.last_message_at)) : "") +
         (bot.last_error ? ' · <span class="bp-err">last delivery failed (' + esc(bot.last_error) + ")</span>" : "") + "</p>" +
-        '<p class="bp-meta">Works in ' + esc(bot.realms.map((r) => r.toLowerCase()).join(" and ")) + '. <button type="button" class="lnk" data-token-menu>Token</button></p><div class="bp-token" hidden></div></div>' +
+        '<p class="bp-meta">Works in ' + esc(bot.realms.map((r) => r.toLowerCase()).join(" and ")) + '. <button type="button" class="lnk" data-token-menu>Token</button>' + (canSend ? ' <button type="button" class="lnk" data-verify>Check connection</button>' : "") + '</p><div class="bp-token" hidden></div></div>' +
       '<ol class="bp-feed" aria-label="' + esc(bot.name) + ' feed">' + (t.events.length ? t.events.map((e) => this._event(e)).join("") : "") + "</ol>" +
       (t.events.length ? "" : '<p class="bp-note bp-empty">' + esc(t.note || "Nothing from " + bot.name + " yet.") + "</p>") +
       '<form class="bp-send" autocomplete="off"><label class="sr" for="bpContent">Message to ' + esc(bot.name) + "</label>" +
@@ -167,6 +172,16 @@ export class BotsPanel {
 
   async _click(e) {
     if (e.target.closest("[data-close]")) return this.close();
+    if (e.target.closest("[data-verify]")) {
+      /* A real round trip: the bot must answer this message with its own token. */
+      const id = this.active, st = this.root.querySelector(".bp-status");
+      if (st) { st.textContent = "Sending a connection check…"; st.classList.remove("err"); }
+      const r = await this.api("POST", "/v1/bots/" + encodeURIComponent(id) + "/verify?realm=" + this.realm(), {});
+      if (st && this.active === id) { st.textContent = r.ok ? "Delivered. It shows as verified once the bot answers." : (r.message || "The check could not be delivered."); if (!r.ok) st.classList.add("err"); }
+      const l = await this.api("GET", "/v1/bots?realm=" + this.realm());
+      if (l.ok && this.isOpen) { this.bots = l.bots || this.bots; this._tabs(); this._paint(); }
+      return;
+    }
     const tab = e.target.closest("[data-bot]"); if (tab) return this.select(tab.dataset.bot);
     const box = this.root.querySelector(".bp-token");
     if (e.target.closest("[data-token-menu]")) {

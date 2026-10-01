@@ -27,7 +27,7 @@ export function providerProblem(x) {
   else if (n === 402) { kind = "credits"; why = "xAI says payment is required (usually no credits left)"; fix = "Check the balance at console.x.ai, then try again."; }
   else if (n === 401) { kind = "key"; why = "xAI rejected the API key"; fix = "Check XAI_API_KEY on the server."; }
   else if (n === 403) { kind = "refused"; why = "xAI refused the request (often no credits left, or the key lacks access to this model)"; fix = "Check credits and model access at console.x.ai."; }
-  else if (n === 429) { kind = "busy"; why = "xAI is limiting how fast ROYAL can ask"; fix = "Wait a minute and try again."; }
+  else if (n === 429) { kind = "busy"; why = "xAI is limiting how fast I can ask"; fix = "Wait a minute and try again."; }
   else if (n === 404) { kind = "model"; why = "xAI doesn't recognise the model name"; fix = "Check ROYAL_GROK_MODEL on the server."; }
   else if (n >= 500) { kind = "outage"; why = "xAI is having trouble on its side"; fix = "Try again in a few minutes."; }
   else if (code === "PROVIDER_TIMEOUT") { kind = "slow"; why = "xAI took too long to answer"; fix = "Try again; a shorter question may help."; }

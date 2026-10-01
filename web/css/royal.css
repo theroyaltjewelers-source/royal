@@ -291,8 +291,13 @@ body[data-wide="1"][data-layout="content"] .caption { font-size: clamp(22px, 1.4
 .bp-tab { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--line); background: none; color: var(--ink-2); font-size: 14px; white-space: nowrap; }
 .bp-tab[aria-selected="true"] { background: rgba(233, 237, 226, .09); color: var(--ink); border-color: var(--line-2); }
 .bp-tab i, .bp-state i { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--ink-3); flex: none; }
-.bp-tab.st-CONNECTED i, .bp-state.st-CONNECTED i { background: var(--lime); border-color: var(--lime); box-shadow: 0 0 8px rgba(149, 254, 0, .6); }
+.bp-tab.st-CONNECTED_VERIFIED i, .bp-state.st-CONNECTED_VERIFIED i, .bp-tab.st-CONNECTED i, .bp-state.st-CONNECTED i { background: var(--lime); border-color: var(--lime); box-shadow: 0 0 8px rgba(149, 254, 0, .6); }
 .bp-tab.st-DISABLED i, .bp-state.st-DISABLED i { background: var(--ink-3); }
+/* set up but never answered: not a green light */
+.bp-tab.st-CONFIGURED_UNVERIFIED i, .bp-state.st-CONFIGURED_UNVERIFIED i { background: transparent; border-color: var(--lime); box-shadow: none; }
+.bp-tab.st-DEGRADED i, .bp-state.st-DEGRADED i { background: var(--amber); border-color: var(--amber); }
+.bp-tab.st-FAILED i, .bp-state.st-FAILED i, .bp-tab.st-AUTH_FAILED i, .bp-state.st-AUTH_FAILED i { background: var(--red); border-color: var(--red); }
+.bp-tab.st-UNRESPONSIVE i, .bp-state.st-UNRESPONSIVE i { background: var(--amber); border-color: var(--amber); }
 .bp-tab.has-err i { background: var(--amber); border-color: var(--amber); box-shadow: none; }
 .bp-body { overflow-y: auto; overscroll-behavior: contain; padding: 14px 20px calc(var(--safe-b) + 20px); display: flex; flex-direction: column; }
 .bp-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
