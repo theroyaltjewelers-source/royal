@@ -18,12 +18,13 @@ export const INTENTS = [
   { skill: "decisions_open",    re: /\b(approv(e|al|als)|decisions?|sign off|waiting on me to decide)\b/i },
   { skill: "what_changed",      re: /\b(what('?s| has)? changed|what'?s new|what happened|any changes|since (yesterday|this morning|last time))\b/i },
   { skill: "what_needs_me",     re: /\b(what needs me|needs? (me|my attention)|what should i (do|focus|look at)|anything for me|triage|what do i need to)\b/i },
+  { skill: "cash_analysis",     re: /\b(tight on cash|cash (flow|position|crunch|is tight|has been tight|been tight|situation)|(low|short|light) on cash|where('?s| is| did) (the|our|all the) (cash|money)( go(ne)?)?|why (is|are|has|have) (we|cash|money) (been )?(so )?(tight|short|low)|how('?s| is) (our )?cash)\b/i },
   { skill: "who_owes_us",       re: /\b(owe|owes|owed|receivables?|outstanding|unpaid|who hasn'?t paid|collect(ions?)?|balances?)\b/i },
   { skill: "waiting_for",       re: /\b(waiting (on|for)|blocked|stuck|holding (us )?up)\b/i },
   { skill: "commitments",       re: /\b(promis(e|es|ed)|commitments?|due (today|tomorrow|this week)|deadlines?)\b/i },
   { skill: "revenue_leakage",   re: /\b(leak(age)?|margin|losing money|underpriced|below (the )?floor)\b/i },
   { skill: "clients_at_risk",   re: /\b(clients? (are |is )?at risk|at[- ]risk|which clients)\b/i },
-  { skill: "sales_pipeline",    re: /\b(leads?|pipeline|inquir(y|ies)|prospects?|sales)\b/i },
+  { skill: "sales_pipeline",    re: /\b(leads?|pipeline|inquir(y|ies)|prospects?|sales(?! tax))\b/i },   /* "sales tax" is a tax question, not the pipeline */
   { skill: "system_status",     re: /\b(systems?|connect(ed|ion)?|integrations?|sync|health|forge|is (royal|the calculator) (working|connected))\b/i },
   { skill: "production_status", re: /\b(production|manufactur(er|ing)|cad|setting|quality control|qc|in the shop|pickups?)\b/i },
 ];
@@ -36,6 +37,15 @@ const HOUSE_AGENT = /\bHOUSE\b/;   /* the agent is written in capitals; "the hou
 const WORKED = /\b(do|did|done|doing|work(ed|ing)?|accomplish(ed)?|complete(d)?|handle(d)?|finish(ed)?|report(ed)?|been up to|activity|productive)\b/i;
 const ACTIVE = /\b(what are you (working on|doing|running)|what('?s| is) (running|in progress|still going)|anything (running|in progress)|what('?s| is) (everyone|the team) (working on|doing))\b/i;
 export const DIAGNOSE = /\b(diagnose yourself|self[- ]?diagnos\w*|run (a |your )?diagnostics?|what systems are (actually )?working|which systems are (actually )?working|is everything (actually )?working|are (all )?(your|the) systems (working|up|ok|healthy))\b/i;
+
+/* A question about a concept ("what's the difference between gross margin
+   and cash flow", "how does A/R affect cash") goes to knowledge first, even
+   when it contains a House word like margin or leads; one naming a record
+   stays with the House. */
+export const CONCEPT = /^\s*(what('?s| is| are) (the )?difference between|what('?s| is| are) (an? )?[a-z/&-]+( [a-z/&-]+){0,3}\s*\??\s*$|how (does|do) [^?]+ (affect|relate to|relate|work|differ)|explain (what|how)|define\b|how should (we|i) (think about|qualify|forecast|measure|price|prioriti[sz]e|decide)|when should (we|i) use)/i;
+
+/* Words that make a "what is" question about the House, not a concept. */
+const HOUSEISH = /\b(our|my|this (week|month)|today|right now|owe[sd]?|happening|going on|changed|new|due|next|waiting|pending|left|status|stage|policy|policies|house|warranty|standard|process|needs?)\b/i;
 
 export function teamRoute(t) {
   if (DIAGNOSE.test(t)) return "self_diagnostic";
@@ -58,6 +68,7 @@ export function route(text, { entityResolved = false, entityStrong = entityResol
   if (definitionQuery(t)) return { skill: "house_term", confidence: 0.9, reason: "FAST_PATH" };
   const tr = teamRoute(t);
   if (tr) return { skill: tr, confidence: 0.9, reason: "LEDGER" };
+  if (!entityResolved && CONCEPT.test(t) && !HOUSEISH.test(t)) return { skill: "open_question", confidence: 0.7, reason: "CONCEPT" };
   if (entityResolved && ABOUT_ENTITY.test(t)) return { skill: "project_status", confidence: 0.9, reason: "ENTITY_QUESTION" };
   for (const r of INTENTS) if (r.re.test(t)) return { skill: r.skill, confidence: 0.85, reason: "RULE" };
   if (entityResolved && entityStrong) return { skill: "project_status", confidence: 0.6, reason: "ENTITY_ONLY" };

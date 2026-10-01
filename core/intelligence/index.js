@@ -20,6 +20,7 @@ import { providerLine } from "../../web/js/notices.js";
 import { EVIDENCE as E, RUN_STATUS, CONFIDENCE as C, EMAIL_STATUS as ES, PRIORITY as P, RISK as R } from "../enums.js";
 import { stableHash, newId } from "../util.js";
 import { systemPrompt } from "../identity.js";
+import { HOUSE_NAMESPACES } from "./knowledge.js";
 import { S } from "./jsonschema.js";
 import { calculate } from "./calc.js";
 import { classify, classifyByRules } from "./intent_engine.js";
@@ -74,7 +75,9 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
 
   async function doKnowledge(text, policy) {
     if (!knowledge) return say(RUN_STATUS.NOT_CONNECTED, "The House documents are not loaded, so I can't answer from House policy.", { type: "text" });
-    const hits = knowledge.search(text, { limit: 5 });
+    /* House policy questions read House documents only; the general
+       reference never stands in for what the House has decided. */
+    const hits = knowledge.search(text, { limit: 5, namespaces: HOUSE_NAMESPACES });
     if (!hits.length) return say(RUN_STATUS.OK, "The House documents don't cover that yet. It isn't written policy, so I won't guess.", { type: "knowledge", answer: null, passages: [] },
       { context: { focus: "house" } });
     const top = hits[0];
@@ -97,9 +100,38 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
       { context: { focus: "house" } });
   }
 
+  /* Current law, tax and regulation: never answered from a static
+     reference or from memory; always researched from current sources. */
+  const TIME_SENSITIVE_RULE = /\b(tax(es)?|irs|sales tax|use tax|1099|w-?2|w-?9|payroll tax|estimated (tax|payments?)|deduct(ible|ion)|depreciation (rule|limit|schedule)s?|filing (deadline|date|requirement)s?|(law|laws|legal|regulation|regulations|compliance|licen[cs]e) (require|requirement|apply|say|rule)|is it legal|minimum wage|section 179|bonus depreciation)\b/i;
+
+  /* A business concept ("what is working capital?") is answered from the
+     executive knowledge fabric (docs/knowledge/), labelled as general
+     reference, not House policy.  With a model, one grounded call; without
+     one, the passage itself. */
+  async function fromFabric(text, policy) {
+    if (!knowledge) return null;
+    const hits = knowledge.search(text, { limit: 3, namespaces: ["fabric"] });
+    if (!hits.length || hits[0].score < 2) return null;
+    const label = "From my business reference (general knowledge, not House policy)";
+    const passages = hits.slice(0, 2).map((h) => ({ citation: h.citation, text: h.text.slice(0, 900), status: null, binding: null, reference: true }));
+    if (modelOn() && policy.use_model) {
+      const r = await provider.complete({ level: 1, max_tokens: 400,
+        system: systemPrompt("TASK: Answer Tahir's business question from the reference passages in <data>, briefly and in plain words; relate it to the House if that helps. If the passages do not answer it, say so. The reference is general knowledge, not House policy.", UNTRUSTED),
+        messages: [{ role: "user", content: "<data>" + JSON.stringify(passages) + "</data>\nQuestion: " + text }] });
+      if (r.ok) return say(RUN_STATUS.OK, r.text.slice(0, 1500), { type: "knowledge", answer: r.text, label: E.INFERENCE, note: label, unknowns: [], passages });
+    }
+    const first = hits[0].text.split("\n").filter((l) => l.trim() && !/^#/.test(l)).join(" ").replace(/\s+/g, " ").slice(0, 500);
+    return say(RUN_STATUS.OK, first, { type: "knowledge", answer: null, label: E.VERIFIED_INTERNAL, note: label, unknowns: [], passages });
+  }
+
   async function doWorld(text, intent, policy) {
     const rs = research.status();
+    if (TIME_SENSITIVE_RULE.test(text)) {
+      if (rs.status !== "CONNECTED") return say(RUN_STATUS.NOT_CONNECTED, "That's a current tax or legal rule, which changes, so I only answer it from current official sources, and web research isn't available (" + rs.detail + "). I can explain the concept, and the House's accountant or lawyer should confirm the rule.", { type: "text" });
+      return doResearch(text + " (use current official government sources; name the jurisdiction)", { ...intent, intent: "current_research", needs_current_web: true }, { ...policy, allow_search: true, research_depth: "STANDARD" });
+    }
     const wantsCurrent = intent.needs_current_web || intent.intent === "current_research";
+    if (!wantsCurrent) { const f = await fromFabric(text, policy); if (f) return f; }
     /* The reasoning policy decides: search only where it allows search, the
        model only where it allows the model, at the model tier it names. */
     if (wantsCurrent && policy.allow_search) {
@@ -208,7 +240,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     const agent = registry.get(agentId);
     if (!agent || agent.status !== "ACTIVE") return say(RUN_STATUS.NOT_CONNECTED, (agent ? agent.name : agentId.toUpperCase()) + " isn't connected, so it can't write this. ACE can.", { type: "text" });
     const objective = objectiveFrom(text, convo.conversation_goal);
-    const offer = knowledge ? knowledge.search(objective + " offer service", { limit: 3, includeTraining: false }) : [];
+    const offer = knowledge ? knowledge.search(objective + " offer service", { limit: 3, includeTraining: false, namespaces: HOUSE_NAMESPACES }) : [];
     const handoff = {
       person: person ? { person_id: person.person_id, name: person.name, title: person.title, email: person.email || null, email_status: person.email_status || null } : null,
       company: company ? { company_id: company.company_id, name: company.name, domain: company.domain } : { name: person.company },
@@ -334,7 +366,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     const plan = planFor(intent, { configured: { web_search: rs.status === "CONNECTED", person_search: rs.status === "CONNECTED", email_find: contacts.status().discovery === "CONNECTED",
       email_verify: contacts.status().verification === "CONNECTED", create_crm_lead: false } });
     if (rs.status !== "CONNECTED") return say(RUN_STATUS.NOT_CONNECTED, "Prospecting needs web research, which isn't available (" + rs.detail + ").", { type: "plan", plan });
-    const offer = knowledge ? knowledge.search(intent.entities.topic || text, { limit: 3, includeTraining: false }) : [];
+    const offer = knowledge ? knowledge.search(intent.entities.topic || text, { limit: 3, includeTraining: false, namespaces: HOUSE_NAMESPACES }) : [];
     const n = intent.count || 5;
     const r = await research.research("Find " + n + " companies" + (intent.entities.place ? " in or near " + intent.entities.place : "") + " that are strong prospects for: " + (intent.entities.topic || text) +
       ". For each, give its official domain, why it fits, and the person most likely to buy (name and exact current title) with sources.",
@@ -369,6 +401,10 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     if (!bots) return say(RUN_STATUS.NOT_CONNECTED, "The Grok Bot bridge isn't running.", { type: "text" });
     const st = await bots.status(agentId);
     if (st.status !== "CONNECTED") return say(RUN_STATUS.NOT_CONNECTED, agentId.toUpperCase() + "'s Grok Bot is " + String(st.status).toLowerCase().replace(/_/g, " ") + ".", { type: "text" });
+    /* Known broken: don't send work into a bot that refuses ROYAL's key or
+       has stopped answering; say so instead. */
+    if (["AUTH_FAILED", "FAILED"].indexOf(st.connection) >= 0)
+      return say(RUN_STATUS.NOT_CONNECTED, "I didn't send that: " + agentId.toUpperCase() + "'s Grok Bot is " + (st.connection === "AUTH_FAILED" ? "refusing my key" : "not reachable") + (st.last_error ? " (" + st.last_error + ")" : "") + ". Its Check connection button will tell us when it's back.", { type: "text" });
     const handoff = { request: text.slice(0, 600), person: convo.active_person || null, company: convo.active_company || null, goal: convo.conversation_goal || null };
     /* Through the permission gate like every other tool, so it is checked and audited. */
     const g = await gate.request({ agentId: "royal", tool: "delegate_to_bot", domain: "world", args: { agent: agentId, objective: text.slice(0, 300), handoff, conversation_id } });
@@ -420,7 +456,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     status, handle, research, exec, contacts, tasks, bots, toolImpls, routeAgents: (intent, text, b) => routeAgents(intent, text, { registry, bots: b, flags }),
     preclassify: (text, convo) => classifyByRules(text, convo),
     classify: (text, convo) => classify(text, { context: convo, provider, useModel: flags.llm_synthesis !== false, metrics }),
-    doBotDelegation,
+    doBotDelegation, fromFabric,
   };
 }
 

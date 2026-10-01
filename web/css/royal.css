@@ -296,7 +296,8 @@ body[data-wide="1"][data-layout="content"] .caption { font-size: clamp(22px, 1.4
 /* set up but never answered: not a green light */
 .bp-tab.st-CONFIGURED_UNVERIFIED i, .bp-state.st-CONFIGURED_UNVERIFIED i { background: transparent; border-color: var(--lime); box-shadow: none; }
 .bp-tab.st-DEGRADED i, .bp-state.st-DEGRADED i { background: var(--amber); border-color: var(--amber); }
-.bp-tab.st-FAILED i, .bp-state.st-FAILED i { background: var(--red); border-color: var(--red); }
+.bp-tab.st-FAILED i, .bp-state.st-FAILED i, .bp-tab.st-AUTH_FAILED i, .bp-state.st-AUTH_FAILED i { background: var(--red); border-color: var(--red); }
+.bp-tab.st-UNRESPONSIVE i, .bp-state.st-UNRESPONSIVE i { background: var(--amber); border-color: var(--amber); }
 .bp-tab.has-err i { background: var(--amber); border-color: var(--amber); box-shadow: none; }
 .bp-body { overflow-y: auto; overscroll-behavior: contain; padding: 14px 20px calc(var(--safe-b) + 20px); display: flex; flex-direction: column; }
 .bp-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }

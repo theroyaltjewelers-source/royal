@@ -17,7 +17,7 @@ const STATUS = { CONNECTED: "Connected", NOT_CONNECTED: "Not connected", DISABLE
 /* What is shown: the bot's real connection (core/grokbot/bots.js connectionOf),
    never a green light for configuration alone. */
 const CONNECTION = { CONNECTED_VERIFIED: "Connected, verified", CONFIGURED_UNVERIFIED: "Set up, not yet verified", DEGRADED: "Last delivery failed",
-  FAILED: "Not reachable", NOT_CONFIGURED: "Not connected", DISABLED: "Switched off" };
+  FAILED: "Not reachable", AUTH_FAILED: "Refusing ROYAL's key", UNRESPONSIVE: "Not answering", NOT_CONFIGURED: "Not connected", DISABLED: "Switched off" };
 const shownState = (b) => b.connection || b.status;
 
 export class BotsPanel {

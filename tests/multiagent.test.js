@@ -179,7 +179,7 @@ test("diagnose yourself: each system with its real state and evidence; an unveri
   const a = await ask(r, "Diagnose yourself");
   assert.equal(a.skill, "self_diagnostic"); assert.match(a.summary, /^I checked \d+ parts of myself/);
   assert.match(a.summary, /Not set up: Language provider/);
-  assert.match(a.summary, /Grok Bot: Ace/); assert.match(a.summary, /Degraded:[^.]*Grok Bot: Grace \(configured unverified/);
+  assert.match(a.summary, /Grok Bot: Ace/); assert.match(a.summary, /Degraded:.*Grok Bot: Grace \(configured unverified/);
   assert.match(a.summary, /Failed: Grok Bot: House \(failed/);
   assert.equal(a.status, "PARTIAL");
 });

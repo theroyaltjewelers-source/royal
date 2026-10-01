@@ -124,7 +124,7 @@ export class GrokBotAdapter {
     if (!this.bridge) return { status: "NOT_CONNECTED", detail: "The Grok Bot bridge is not running." };
     const l = await this.bridge.listBots({ realm });
     const b = l.body && l.body.bots ? l.body.bots.find((x) => x.id === botId) : null;
-    return b ? { status: b.status, last_seen: b.last_seen, last_error: b.last_error } : { status: "NOT_CONNECTED", detail: "No such bot in this realm." };
+    return b ? { status: b.status, connection: b.connection || null, last_seen: b.last_seen, last_error: b.last_error } : { status: "NOT_CONNECTED", detail: "No such bot in this realm." };
   }
   async delegate({ agent, objective, handoff, conversation_id, realm = "BUSINESS" }) {
     const task = await this.tasks.create({ agent, adapter: "grokbot", objective, handoff, conversation_id, realm });

@@ -96,15 +96,20 @@ export function authHeaderFor(bot) {
      CONNECTED_VERIFIED     ROYAL delivered a message to its webhook, and the
                             bot has posted back with its own token
      DEGRADED               it worked before, but the last delivery failed
+     AUTH_FAILED            the bot's webhook refused ROYAL's key (401 or 403)
+     UNRESPONSIVE           delivered, but no word back for 15 minutes
      FAILED                 the last delivery failed and it never answered
 
    `status` stays the configuration state (what may be attempted); this is
    what is shown as the bot's connection. */
-export function connectionOf(bot, state = {}) {
+export const UNRESPONSIVE_MS = 15 * 60000;
+export function connectionOf(bot, state = {}, now = Date.now()) {
   if (!bot.configured) return "NOT_CONFIGURED";
   if (!bot.enabled) return "DISABLED";
   const seen = state.last_seen ? Date.parse(state.last_seen) : 0, sent = state.last_message_at ? Date.parse(state.last_message_at) : 0;
+  if (state.last_error && sent >= seen && /_HTTP_40[13]$/.test(state.last_error)) return "AUTH_FAILED";
   if (state.last_error && sent >= seen) return seen ? "DEGRADED" : "FAILED";
+  if (!state.last_error && sent > seen && now - sent > UNRESPONSIVE_MS) return "UNRESPONSIVE";
   if (seen && sent && !state.last_error) return "CONNECTED_VERIFIED";
   return "CONFIGURED_UNVERIFIED";
 }

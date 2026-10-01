@@ -16,6 +16,7 @@ import { draftFor } from "./drafts.js";
 import { describeSelf, greetingLine } from "../core/identity.js";
 import { definitionQuery } from "../core/house_language.js";
 import { objectiveWords as objectiveWordsFor } from "../core/agent_ledger.js";
+import { congruence } from "../core/congruence.js";
 
 const ALL = ["ace", "grace", "ledger", "forge"];
 
@@ -615,4 +616,38 @@ skill(meta("self_diagnostic", "Self-diagnostic", [], { purpose: "Every part of R
   if (by("FAILED").length) parts.push("Failed: " + by("FAILED").map(name).join("; ") + ".");
   if (by("NOT_CONFIGURED").length) parts.push("Not set up: " + by("NOT_CONFIGURED").map(name).join("; ") + ".");
   return { status: by("FAILED").length ? RUN_STATUS.PARTIAL : RUN_STATUS.OK, summary: parts.join(" "), findings: [], surface: { type: "text", label: "VERIFIED_INTERNAL" }, data: { checks: d } };
+});
+
+/* ------------------------------------------------------ cash analysis --- */
+/* "Why have we been tight on cash?" from the House's real numbers: LEDGER's
+   read of the projects and the calculator's own treasury (its runway is its
+   calculation; ROYAL never recomputes it).  Fact, analysis and
+   recommendation are kept apart, and the limits of what ROYAL can see are
+   said: no bank feed, no expenses, no history by month. */
+skill(meta("cash_analysis", "Cash position and pressure", ["ledger"], { purpose: "Where the cash is, and what is holding it, from the calculator's money records." }), async (ctx) => {
+  const { results } = await gather(ctx, ["ledger"]);
+  if (notConnected(results)) return calcDown(ctx);
+  const l = results.ledger && results.ledger.data;
+  if (!l) return { status: RUN_STATUS.FAILED, summary: "LEDGER didn't return the money record, so I can't answer that yet.", findings: [], surface: { type: "text" } };
+  const tr = l.treasury || null;
+  const finished = l.debtors.filter((d) => d.finished).reduce((a, d) => a + d.outstanding, 0);
+  const unfundedProd = l.unfunded;
+  const lateBills = tr && tr.inbox ? tr.inbox.filter((i) => i.sec === "payables") : [];
+  const fact = tr
+    ? "The calculator shows " + money(tr.available) + " available, " + money(tr.receivable) + " owed to us and " + money(tr.payable) + " we owe vendors" + (tr.runway_days != null ? ", with " + tr.runway_days + " days of runway by its calculation" : "") + "."
+    : money(l.receivable) + " is owed to us across " + plural(l.debtors.length, "commission") + ". The calculator didn't send its treasury, so I can't see available cash.";
+  const analysis = [];
+  if (finished > 0) analysis.push(money(finished) + " of what we're owed is on finished pieces, so it's collectable now without more work");
+  if (unfundedProd > 0) analysis.push(money(unfundedProd) + " of production is running ahead of what clients have paid toward it");
+  if (lateBills.length) analysis.push(plural(lateBills.length, "vendor bill") + " " + (lateBills.length === 1 ? "is" : "are") + " overdue (" + lateBills.map((b) => b.title.replace(/^Overdue to /, "") + " " + money(b.amount)).join(", ") + ")");
+  const rec = finished > 0 ? "If cash is the priority, I'd collect the finished-piece balances first: they need no more work." : unfundedProd > 0 ? "If cash is the priority, I'd collect toward production that's running ahead before starting more." : null;
+  const limits = "I can't see the bank, expenses or month-by-month history, so this is the position now, not the full story of why it got tight.";
+  /* Where the record disagrees with itself, say so rather than pick a side. */
+  const latest = ctx.connector ? await ctx.connector.latest() : null;
+  const money_conflicts = latest ? congruence(latest.snapshot).issues.filter((i) => i.kind === "SOURCE_CONFLICT" && /RECEIVABLE|PAYABLE/.test(i.code)) : [];
+  const nc = money_conflicts.length;
+  const conflictLine = nc ? (nc === 1 ? "One thing doesn't add up: " : (nc === 2 ? "Two" : nc) + " things don't add up: ") +
+    money_conflicts.map((i) => i.text).join(" ") + " I haven't picked one side; the calculator's records should be checked." : "";
+  return { status: RUN_STATUS.OK, summary: [fact, analysis.length ? "What it means: " + analysis.join("; ") + "." : "", conflictLine, rec ? "My recommendation: " + rec.replace(/^If/, "if") : "", limits].filter(Boolean).join(" "),
+    findings: (results.ledger.findings || []).slice(0, 8), surface: { type: "text", label: "VERIFIED" } };
 });

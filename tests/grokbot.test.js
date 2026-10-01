@@ -541,3 +541,17 @@ test("a bot is CONNECTED_VERIFIED only after a real round trip, never for config
   const none = createBridge({ env: { GROKBOT_ENABLED: "true", GROKBOT_BOTS: "ace" }, logger: quiet });
   assert.equal((await none.listBots({})).body.bots[0].connection, "NOT_CONFIGURED");
 });
+
+test("bot health: a refused key is AUTH_FAILED, silence after delivery is UNRESPONSIVE, and neither is ever connected", async () => {
+  const { connectionOf } = await import("../core/grokbot/bots.js");
+  const bot = { configured: true, enabled: true };
+  const t = (m) => new Date(Date.parse("2026-10-01T12:00:00Z") + m * 60000).toISOString();
+  const now = Date.parse(t(0));
+  assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_HTTP_401" }, now), "AUTH_FAILED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_HTTP_403", last_seen: t(-60) }, now), "AUTH_FAILED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_seen: t(-90) }, now), "UNRESPONSIVE", "asked 20 minutes ago, last heard before that");
+  assert.equal(connectionOf(bot, { last_message_at: t(-5), last_seen: t(-90) }, now), "CONNECTED_VERIFIED", "proven before, and the new message is still within the window");
+  assert.equal(connectionOf(bot, { last_message_at: t(-20), last_seen: t(-10) }, now), "CONNECTED_VERIFIED");
+  assert.equal(connectionOf(bot, { last_message_at: t(-1), last_error: "GROKBOT_TIMEOUT" }, now), "FAILED");
+  assert.equal(connectionOf({ configured: false, enabled: true }, {}, now), "NOT_CONFIGURED");
+});

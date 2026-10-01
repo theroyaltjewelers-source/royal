@@ -25,6 +25,7 @@ import { newId, clone, stableHash } from "./util.js";
 import { runTraced, mark, setPath, timingOf } from "./trace.js";
 import { systemPrompt, fastPath, describeSelf, greetingLine } from "./identity.js";
 import { AgentActivityLedger, dayOf } from "./agent_ledger.js";
+import { congruence } from "./congruence.js";
 import { RoyalTConnector } from "../realms/business/royal-t/connector.js";
 import { SPECIALISTS, DEFAULT_OWNERS } from "../realms/business/royal-t/specialists.js";
 import { diffSnapshots } from "../realms/business/royal-t/changes.js";
@@ -181,6 +182,8 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   /* ---------------------------------------------------- open questions --- */
   async function openQuestion(cmd, ctx) {
     const ps = provider.status();
+    /* No model: a business concept can still be answered from the reference. */
+    if ((!F.llm_synthesis || ps.status === CONNECTION.NOT_CONNECTED) && !/\b(policy|policies|our|house)\b/i.test(cmd.content)) { const f = await intelligence.fromFabric(cmd.content, { use_model: false }); if (f) return f; }
     if (!F.llm_synthesis || ps.status === CONNECTION.NOT_CONNECTED)
       return { status: RUN_STATUS.NOT_CONNECTED,
         summary: "I answer from the records for questions like: what needs me, state of the House, who owes us, what are we waiting on, what's due, production, what changed, can I step away. Open questions need the language provider, which is not connected.",
@@ -233,6 +236,12 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const checks = {
       "Language provider": () => { const s = provider.status(); return { state: s.status === "CONNECTED" ? H : s.status === "DEGRADED" ? D : N, evidence: s.status === "CONNECTED" ? (s.model + (s.last_ok_at ? ", last answered " + Math.round((clock() - s.last_ok_at) / 60000) + " min ago" : ", not used yet")) : s.detail }; },
       "Project Calculator": async () => { const s = await connector.status(clock()); return { state: !s.connected ? N : s.freshness === "STALE" || s.freshness === "EXPIRED" ? D : H, evidence: s.connected ? "last snapshot " + s.age + (s.partial ? ", partial" : "") : "no snapshot has reached me" }; },
+      "Data congruence": async () => {
+        const l = await connector.latest();
+        if (!l) return { state: N, evidence: "no snapshot to check" };
+        const c = congruence(l.snapshot);
+        return { state: c.ok ? H : D, evidence: c.ok ? "the calculator's figures agree with each other" : c.issues.length + (c.issues.length === 1 ? " issue: " : " issues: ") + c.issues.map((i) => i.text).join(" ") };
+      },
       "Memory": () => ({ state: store.durable ? H : D, evidence: store.durable ? "durable store" : "in memory; lost on restart" }),
       "House knowledge": () => { const k = intelligence.status().knowledge; return { state: k.status === "CONNECTED" ? (k.passages ? H : D) : N, evidence: k.status === "CONNECTED" ? k.documents + " documents, " + k.passages + " passages" : "not loaded" }; },
       "Web research": () => { const r = intelligence.research.status(); return { state: r.status === "CONNECTED" ? H : r.status === "DISABLED" ? N : N, evidence: r.detail || r.status.toLowerCase() }; },
@@ -342,7 +351,10 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     let intel = null;
     /* Fast-path and ledger answers are ROYAL's own records: nothing diverts
        them to research or a model. */
-    if (!cmd.skill && ["FAST_PATH", "LEDGER"].indexOf(intent.reason) < 0) {
+    /* A concept question goes to knowledge: the reference, then the model. */
+    if (!cmd.skill && intent.reason === "CONCEPT") intel = { intent: "world_knowledge", needs_current_web: false, entities: { topic: cmd.content.slice(0, 200) },
+      research_depth: "QUICK", response_mode: "brief", interpreted_by: "rules", confidence: 0.7 };
+    else if (!cmd.skill && ["FAST_PATH", "LEDGER"].indexOf(intent.reason) < 0) {
       const pre = intelligence.preclassify(cmd.content, convo);
       /* "Send it" with an outreach email open goes to the intelligence layer,
          which asks which one when a House update is also waiting.  Naming
