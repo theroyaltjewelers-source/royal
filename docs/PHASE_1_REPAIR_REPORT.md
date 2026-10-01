@@ -4,7 +4,7 @@
 
 ## Phase 1 readiness
 
-**PHASE 1 NOT READY.** Every automated gate passes (17 of 17, `npm run phase1:verify` with Postgres). The six production gates were not run: this environment's network policy refuses the production server and xAI (CONNECT 403). The blockers are exactly these:
+**PHASE 1 NOT READY.** (Updated after the ROYAL-to-Bot addendum: 18 of 18 automated gates pass, including the new ROYAL_TO_BOT_FLOW gate; 7 live gates, including LIVE_ROYAL_TO_BOT, must pass against production with Tahir's real bots. See the addendum section at the end.) Every automated gate passes (17 of 17, `npm run phase1:verify` with Postgres). The six production gates were not run: this environment's network policy refuses the production server and xAI (CONNECT 403). The blockers are exactly these:
 
 (a) Run `ROYAL_URL=https://royal-1wx5.onrender.com ROYAL_TOKEN=<session token> npm run phase1:verify` after this is deployed, and get LIVE_HEALTH, LIVE_DURABILITY, LIVE_BOT, LIVE_MULTI_AGENT, LIVE_VOICE and LIVE_ERROR to pass.
 
@@ -145,3 +145,18 @@ Web research, people research and voice need `XAI_API_KEY` (reported configured)
 ## Technical debt
 
 Two rule interpreters; conversation context in memory; large single files; no text streaming. See the audit, section 24.
+
+## Addendum: ROYAL talks to the bots from the conversation
+
+**Defect.** Tahir had to open the Bots panel and type into a bot before it answered. In code: every "Ask GRACE …", "Have LEDGER …" or "Talk to FORGE …" was routed to `delegate_draft` (`core/intent.js`, `DELEGATE_VERB`), which drafts a client message; the only path to a real bot was that skill for an agent that was not ACTIVE with `advanced_agent_orchestration` on (off by default); and a bot's reply was written only to its feed.
+
+**Fix.** The agent orchestrator and the execution router (ADR-017, `AGENT_ORCHESTRATION.md` section 8), the structured envelope and stricter verification (`ROYAL_GROK_BOT_CONNECTIVITY.md` section 8), the conversation inbox and the page listening for late answers (`web/js/app.js`, `listenForReplies`), the Bots panel labelled as a direct, debugging line, and each specialist's backends in "diagnose yourself".
+
+**Gate.** ROYAL_TO_BOT_FLOW (13 mapped tests in `tests/royal_to_bot.test.js`, 17 in the file) and LIVE_ROYAL_TO_BOT in `npm run phase1:verify`.
+
+**Evidence here.**
+(a) `npm test`: all pass; with Postgres, all pass.
+(b) LIVE_ROYAL_TO_BOT passed against the real server (Node, Postgres) with five stand-in bots answering over HTTP with their own tokens: each passed the nonce connection test, was asked from the main conversation, and its answer came back to that conversation.
+(c) In Chromium at phone and desktop sizes, from the main page: GRACE's answer came back inline; FORGE's came back late, first "I sent that to FORGE", then "FORGE came back: …" on its own through the inbox. No 4xx or 5xx from the API.
+
+**Not yet proven.** The same with Tahir's real Grok Bots. They need the set-up in `docs/GROK_BOT_SETUP.md` (LEDGER and FORGE added to `GROKBOT_BOTS`, a token each, and the reply instructions), then `npm run phase1:verify` against production.

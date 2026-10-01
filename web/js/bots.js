@@ -122,7 +122,10 @@ export class BotsPanel {
         '<p class="bp-meta">Works in ' + esc(bot.realms.map((r) => r.toLowerCase()).join(" and ")) + '. <button type="button" class="lnk" data-token-menu>Token</button>' + (canSend ? ' <button type="button" class="lnk" data-verify>Check connection</button>' : "") + '</p><div class="bp-token" hidden></div></div>' +
       '<ol class="bp-feed" aria-label="' + esc(bot.name) + ' feed">' + (t.events.length ? t.events.map((e) => this._event(e)).join("") : "") + "</ol>" +
       (t.events.length ? "" : '<p class="bp-note bp-empty">' + esc(t.note || "Nothing from " + bot.name + " yet.") + "</p>") +
-      '<form class="bp-send" autocomplete="off"><label class="sr" for="bpContent">Message to ' + esc(bot.name) + "</label>" +
+      /* Two modes, said plainly: normal work goes through me in the
+         conversation; this box is a direct line for checking and debugging. */
+      '<p class="bp-note bp-mode">Direct message, for checking and debugging. For normal work, just ask me in the conversation (“Ask ' + esc(bot.name) + ' …”) and I’ll bring the answer back there.</p>' +
+      '<form class="bp-send" autocomplete="off"><label class="sr" for="bpContent">Direct message to ' + esc(bot.name) + "</label>" +
         '<textarea id="bpContent" name="content" rows="2" maxlength="2000" placeholder="' + esc(canSend ? "Message " + bot.name : bot.name + " can't be reached from here yet") + '"' + (canSend ? "" : " disabled") + ">" + esc(t.draft) + "</textarea>" +
         '<div class="bp-row"><label class="sr" for="bpSkill">Skill (optional)</label><input id="bpSkill" name="skill" maxlength="64" placeholder="skill (optional)"' + (canSend ? "" : " disabled") + '>' +
         '<span class="bp-count" id="bpCount"></span><button type="submit" class="act approve"' + (canSend ? "" : " disabled") + ">Send</button></div>" +

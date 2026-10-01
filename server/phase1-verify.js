@@ -42,6 +42,9 @@ export const GATES = {
   VERIFICATION: [/a verification failure is caught even when the executor says ok/, /an approved action with no executor says a person must do it/, /email is verified only when the provider says delivered/],
   ERROR: [/every API call the page makes has a route that accepts its method/, /a known route asked with the wrong method is a 405/, /HEAD is answered like GET/],
   DURABILITY: [/postgres: a Decision survives a restart/, /postgres: boot reports MEMORY as DURABLE/, /Postgres: events, requests and tokens survive a restart/, /postgres: migrations apply once/],
+  ROYAL_TO_BOT_FLOW: [/^ROYAL to ACE: /, /^ROYAL to GRACE: /, /^ROYAL to LEDGER: /, /^ROYAL to HOUSE: /, /^ROYAL to FORGE: /,
+    /^GRACE and LEDGER together/, /lands in the same conversation's inbox/, /talk to each of the bots: my records first/, /a bot proposing to send an email gets nothing sent/,
+    /a specialist may ask for another through ROYAL/, /connection test through the orchestrator/, /wording: I never say I asked a bot/, /^acceptance: “ROYAL\.” → each bot/],
   SECURITY: [/health is public and says nothing else/, /every other route needs a signed-in owner/, /never a token, body or query/, /prompt injection in research results is data/, /GET \/v1\/bots lists every bot with status and never a URL, key or header/],
 };
 
@@ -87,6 +90,37 @@ async function live() {
   const bad = [];
   for (const [m, p] of calls) { const r = await get(p, { method: m }); if (r.status === 404 || r.status === 405 || r.status >= 500 || r.status === 0) bad.push(m + " " + p + " " + r.status); }
   res.LIVE_ERROR = { pass: !bad.length, evidence: bad.length ? bad.join("; ") : calls.length + " page routes answered without 404, 405 or 5xx" };
+
+  /* ROYAL to each specialist's real Grok Bot, from the main conversation:
+     a nonce connection test, then a question asked the way Tahir asks it,
+     and the answer must come back to that conversation (at once, or in its
+     inbox).  No Bots-panel message is sent. */
+  const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const r2b = [];
+  for (const id of ["ace", "grace", "ledger", "house", "forge"]) {
+    const b = list.find((x) => x.id === id);
+    if (!b || !b.can_send) { r2b.push(id + ": no Grok Bot configured"); continue; }
+    const v = await get("/v1/bots/" + id + "/verify?realm=BUSINESS", { method: "POST", body: "{}" });
+    let conn = null;
+    for (let i = 0; i < 40 && v.status === 200; i++) {
+      await sleep(3000);
+      const l = await get("/v1/bots?realm=BUSINESS");
+      conn = ((l.json && l.json.bots) || []).find((x) => x.id === id);
+      if (conn && conn.connection_state === "CONNECTED_VERIFIED") break;
+    }
+    if (!conn || conn.connection_state !== "CONNECTED_VERIFIED") { r2b.push(id + ": connection test not answered (" + (conn ? conn.connection_state : "HTTP " + v.status) + ")"); continue; }
+    const convo = "phase1-r2b-" + id + "-" + Date.now();
+    const ask = await get("/v1/command", { method: "POST", body: JSON.stringify({ content: "Ask " + id.toUpperCase() + " what it worked on today.", conversation_id: convo }) });
+    const res0 = ask.json && ask.json.result;
+    let back = res0 && new RegExp("^" + id.toUpperCase() + " came back:").test(res0.summary || "");
+    for (let i = 0; i < 40 && res0 && !back && res0.pending && res0.pending.length; i++) {
+      await sleep(3000);
+      const ib = await get("/v1/inbox?realm=BUSINESS&conversation_id=" + encodeURIComponent(convo));
+      back = ((ib.json && ib.json.items) || []).some((it) => new RegExp("^" + id.toUpperCase() + " came back:").test((it.result && it.result.summary) || ""));
+    }
+    r2b.push(id + ": " + (back ? "verified, and its answer came back to the conversation" : "asked from the conversation, no answer came back (" + (res0 ? res0.summary.slice(0, 80) : "HTTP " + ask.status) + ")"));
+  }
+  res.LIVE_ROYAL_TO_BOT = { pass: r2b.every((x) => /came back to the conversation$/.test(x)), evidence: r2b.join("; ") };
   return res;
 }
 
@@ -103,7 +137,7 @@ for (const [gate, pats] of Object.entries(GATES)) {
 }
 const L = await live();
 if (L) for (const [gate, r] of Object.entries(L)) rows.push({ gate, ...r });
-else for (const gate of ["LIVE_HEALTH", "LIVE_DURABILITY", "LIVE_BOT", "LIVE_MULTI_AGENT", "LIVE_VOICE", "LIVE_ERROR"]) rows.push({ gate, pass: false, evidence: "NOT RUN: set ROYAL_URL and ROYAL_TOKEN to check production" });
+else for (const gate of ["LIVE_HEALTH", "LIVE_DURABILITY", "LIVE_BOT", "LIVE_MULTI_AGENT", "LIVE_VOICE", "LIVE_ERROR", "LIVE_ROYAL_TO_BOT"]) rows.push({ gate, pass: false, evidence: "NOT RUN: set ROYAL_URL and ROYAL_TOKEN to check production" });
 
 const total = tests.length, passed = tests.filter((t) => t.pass).length, skippedAll = tests.filter((t) => t.skipped).length;
 console.log("\nROYAL Phase 1 readiness gate");

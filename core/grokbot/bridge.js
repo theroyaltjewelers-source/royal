@@ -24,9 +24,11 @@ import { loadBotRegistry, authHeaderFor, publicBotView, BOT_ID_RE, LEGACY_BOT_ID
 import { MemoryBridgeStore } from "./store.js";
 import { LocalPubSub } from "./pubsub.js";
 import { mintToken, verifyBotToken } from "./tokens.js";
+import { envelopeFrom, expectedFrom, validateEnvelope } from "./envelope.js";
 
 export const LIMITS = Object.freeze({
-  MAX_MESSAGE_CHARS: 2000,
+  MAX_MESSAGE_CHARS: 8000,   /* ROYAL's own task messages carry a structured handoff; the panel's box stops at 2000 */
+  MAX_ENVELOPE_CHARS: 20000,
   MAX_EVENT_CHARS: 100000,
   FEED_DEFAULT: 100, FEED_MAX: 500, REPLAY_MAX: 500, REPLAY_PAGES: 10,
   MAX_STREAMS_PER_SCOPE: 10, MAX_STREAMS_TOTAL: 100,
@@ -57,6 +59,11 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
   warnings.forEach((w) => logger.warn && logger.warn("[grokbot] " + w));
   const ps = pubsub || new LocalPubSub(store);
   const counts = new Map(); let total = 0;
+  /* Who hears each bot event as it is recorded: the agent orchestrator,
+     which matches a reply to the handoff that asked for it.  Listeners get
+     records only; the bridge itself still calls no tool and creates no
+     decision. */
+  const listeners = [];
   const windows = new Map();
 
   const getBot = (id) => (typeof id === "string" && BOT_ID_RE.test(id) ? bots.get(id) || null : null);
@@ -174,6 +181,8 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     const [status, stOk] = opt(body.status, STATUS_RE); if (!stOk) return fail(400, "BAD_STATUS", "status must be lower-case letters and underscores.");
     const [requestId, rOk] = opt(body.request_id, UUID_RE); if (!rOk) return fail(400, "BAD_REQUEST_ID", "request_id must be the id ROYAL sent.");
     if (!blank(body.realm) && !checkRealm(realmOf(body.realm))) return fail(400, "BAD_REALM", "Realm must be BUSINESS or PERSONAL.");
+    if (body.envelope !== undefined && (!isObj(body.envelope) || JSON.stringify(body.envelope).length > L.MAX_ENVELOPE_CHARS))
+      return fail(400, "BAD_ENVELOPE", "envelope must be a JSON object of at most " + L.MAX_ENVELOPE_CHARS + " characters.");
     if (limited("in", bot.id, L.EVENTS_PER_MINUTE)) return fail(429, "RATE_LIMITED", "Too many events. Wait a minute.");
 
     let realm = blank(body.realm) ? null : realmOf(body.realm);
@@ -191,21 +200,35 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     if (!realm) realm = allows(bot, "BUSINESS") ? "BUSINESS" : bot.realms[0];
     if (!allows(bot, realm)) return fail(403, "REALM_FORBIDDEN", bot.name + " cannot post " + realm.toLowerCase() + " events.");
 
+    /* The structured reply, checked against what ROYAL's message asked to
+       be repeated back (handoff_id, and for a connection test, the nonce). */
+    const raw = envelopeFrom(body);
+    const expected = req ? expectedFrom(req.content) : { handoff_id: null, nonce: null, task_id: null };
+    const checked = raw ? validateEnvelope(raw, { bot_id: bot.id, handoff_id: expected.handoff_id, nonce: expected.nonce }) : null;
+    if (checked && checked.ok && expected.nonce && !(checked.envelope.role && checked.envelope.name)) { checked.ok = false; checked.errors.push("a connection test must return name and role"); }
     if (req) {
-      /* "blocked" from a bot means the same as waiting on someone. */
-      const next = status === "blocked" ? "waiting" : REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type];
+      /* "blocked" from a bot means the same as waiting on someone; a valid
+         envelope's own status says the rest. */
+      const fromEnv = checked && checked.ok ? { WAITING: "waiting", IN_PROGRESS: "in_progress", FAILED: "failed", PARTIAL: "completed", REPORTED_COMPLETE: "completed" }[checked.envelope.status] : null;
+      const next = fromEnv || (status === "blocked" ? "waiting" : REQUEST_STATUSES.indexOf(status) >= 0 ? status : EVENT_TO_REQUEST[type]);
       if (next && req.status !== next) await store.updateRequest(bot.id, req.id, { status: next, last_error: next === "failed" ? "reported by bot" : null });
     }
-    /* A correlated answer, with the bot's own token, to a message ROYAL
-       delivered, in time: that is a verified round trip. */
+    /* A verified round trip: the bot's own token, the request_id of a
+       message ROYAL delivered, in time, and a result envelope that names this
+       bot and repeats the handoff (and nonce) exactly.  Prose alone, or a
+       post with no request_id, proves only that the bot can reach ROYAL. */
     const at = now(), patch = { last_seen: at };
-    if (req && req.requested_by !== bot.id && ["result", "message", "progress"].indexOf(type) >= 0) {
+    if (req && req.requested_by !== bot.id && type === "result" && checked && checked.ok && (expected.handoff_id || expected.nonce)) {
       const ms = Date.parse(at) - Date.parse(req.created_at);
       if (ms >= 0 && ms <= UNRESPONSIVE_MS) Object.assign(patch, { last_verified_at: at, last_roundtrip_ms: ms, pending_verify_at: null });
     }
     await store.touchBot(bot.id, patch);
     const evt = await record({ bot_id: bot.id, realm, request_id: requestId, type, content_markdown, status, author: bot.id });
-    return ok({ bot_id: bot.id, event_id: evt.id, request_id: requestId, realm }, 201);
+    for (const fn of listeners) {
+      try { await fn({ bot_id: bot.id, event: evt, request: req, envelope: checked, expected }); }
+      catch (e) { logger.warn && logger.warn("[grokbot] event listener failed: " + (e && e.message)); }
+    }
+    return ok({ bot_id: bot.id, event_id: evt.id, request_id: requestId, realm, envelope: checked ? (checked.ok ? "valid" : "invalid: " + checked.errors.join("; ")) : "none" }, 201);
   }
   /* Is this request id owned by some other bot?  Asked bot by bot, so the
      store is never queried without a bot_id. */
@@ -339,6 +362,7 @@ export function createBridge({ env = {}, store = new MemoryBridgeStore(), pubsub
     hasBot: (id) => !!getBot(id), bots: () => [...bots.keys()], stats: () => ({ total, scopes: Object.fromEntries(counts) }),
     storage: () => (store.durable ? "DURABLE" : "TEMPORARY"),
     enabled: () => globalEnabled,
+    onEvent: (fn) => { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); }; },
     async close() { await ps.stop(); await store.close(); },
   };
 }

@@ -64,3 +64,13 @@ The page reads `can_send` and `connection_state` and infers nothing (`canSendTo`
 (e) Section 5 (b) still holds for explicit delegation: Tahir may hand work to a configured, unverified bot, because answering it is what verifies it. Routed work goes only to a bot with `can_receive_tasks`.
 
 (f) Still not run: a round trip with Tahir's real bots. This environment cannot reach them or the production server. `npm run phase1:verify` with `ROYAL_URL` and `ROYAL_TOKEN` lists each bot's live state.
+
+## 8. ROYAL to the bots from the conversation, 1 October 2026
+
+(a) Tahir no longer needs the Bots panel. "Ask GRACE …", "Have GRACE and LEDGER look at Marcus together" and "Talk to each of the bots" go through the agent orchestrator, which reaches each bot through the bridge and brings its answer back to the conversation (ADR-017, `core/intelligence/orchestrator.js`).
+
+(b) **Verification is stricter.** A round trip verifies only when the bot's `result` event carries a valid envelope that names the bot and repeats the `handoff_id` ROYAL sent, and for a connection test the `nonce`, its name and role. Prose, a wrong nonce, or a post with no `request_id` does not verify. "Check connection" now sends that nonce test through the orchestrator, so the test is an AgentTask and a ledger entry like any other hand-off.
+
+(c) **Set-up** for Tahir: `docs/GROK_BOT_SETUP.md`. LEDGER and FORGE need adding to `GROKBOT_BOTS` with their own webhooks.
+
+(d) **Proven here:** the gate tests (`tests/royal_to_bot.test.js`) and the live gate LIVE_ROYAL_TO_BOT, run against the real server over HTTP with five stand-in bots. **Not yet proven:** the same with Tahir's real Grok Bots.

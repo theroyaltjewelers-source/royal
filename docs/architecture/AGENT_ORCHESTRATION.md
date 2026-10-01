@@ -110,3 +110,17 @@ A test fails if any status in `TASK_STATUS` is never set by code ("every task st
 `validateResult()` requires the core fields, known status, priority and risk, a title and evidence label on each finding, and a source on any VERIFIED finding. In `consult()`, an invalid result is replaced by a FAILED result and marked `verified: false`; a throw or timeout is contained the same way (tested: "a specialist that throws is contained", "a result claiming VERIFIED with no source is invalid").
 
 A Grok Bot's report is never verified: the delegation entry is `verified: false`, and its content is a feed record, not a finding.
+
+## 8. The orchestrator, 1 October 2026
+
+Normal delegation now goes through `AgentOrchestrator` in `core/intelligence/orchestrator.js` (ADR-017). Sections 3 to 5 still describe the routing pieces it uses; the differences:
+
+(a) `delegateToAgent()` is the one call. Its outcomes are ANSWERED, PENDING, FAILED, UNAVAILABLE and REFUSED, and it never throws.
+
+(b) `chooseBackend()` decides native or Grok Bot, with provenance EXPLICIT_BOT_REQUEST, SPECIALIST_CAPABILITY_ROUTE, NATIVE_FAST_PATH, DURABLE_BOT_ROUTE or FALLBACK. An explicit request reaches a reachable bot without any flag; `advanced_agent_orchestration` no longer gates it. A failed delivery says so and then answers natively, labelled as such.
+
+(c) Native backend: `nativeRun` in `core/royal.js` runs a House skill in the specialist's name (GRACE: project or production status; LEDGER: the project's money, cash or receivables; ACE: the pipeline, or a client draft; FORGE: the self-diagnostic, or its own timings for "why was it slow"). HOUSE has none.
+
+(d) Grok Bot backend: an AgentTask with `handoff_id`, `parent_request_id`, `conversation_id`, `provenance`, `depth` and `chain`; a ledger entry (`noteDelegation`); delivery through the permission gate (`delegate_to_bot`); the reply matched by the bridge's event listener; the task updated from the envelope; an `AGENT_RESULT_RECEIVED` audit entry; the answer returned inline or to `GET /v1/inbox`.
+
+(e) `GrokBotAdapter.delegate` and `doBotDelegation` remain for compatibility and are no longer on the conversation's path.

@@ -72,9 +72,9 @@ export class AgentTasks {
   constructor({ store, clock = () => Date.now(), bridge = null, audit = null }) { Object.assign(this, { store, clock, bridge, audit }); }
 
   async create({ agent, adapter, objective, handoff = null, deadline_ms = 24 * 3600000, conversation_id = null, realm = "BUSINESS", required_output = "structured result",
-    constraints = ["no external action", "no money", "report only"], approval_boundary = "anything consequential becomes a Decision for Tahir", verification_method = "Tahir reviews the result" }) {
+    constraints = ["no external action", "no money", "report only"], approval_boundary = "anything consequential becomes a Decision for Tahir", verification_method = "Tahir reviews the result", extra = {} }) {
     const now = this.clock();
-    const t = { id: newId("tsk"), agent, adapter, objective: String(objective).slice(0, 500), handoff, created_at: now, deadline: now + deadline_ms, status: TS.ASSIGNED,
+    const t = { ...extra, id: newId("tsk"), agent, adapter, objective: String(objective).slice(0, 500), handoff, created_at: now, deadline: now + deadline_ms, status: TS.ASSIGNED,
       required_output, constraints, approval_boundary, verification_method, conversation_id, realm, request_id: null, result: null, history: [{ at: now, status: TS.ASSIGNED }] };
     await this.store.put("agent_tasks", t.id, t, null);
     return t;
@@ -82,13 +82,16 @@ export class AgentTasks {
   /* Compare-and-swap with a bounded retry: a refresh and a cancel landing
      at the same moment both apply, instead of one silently overwriting the
      other (the result of the put used to be ignored). */
-  async update(id, patch) {
+  /* onlyStatusFrom: change the status only if it is still one of these
+     (a later answer is never overwritten by an earlier step). */
+  async update(id, patch, { onlyStatusFrom = null } = {}) {
     for (let attempt = 0; attempt < 40; attempt++) {
       if (attempt) await backoff(attempt);
       const cur = await this.store.get("agent_tasks", id);
       if (!cur) return null;
-      const next = { ...cur.data, ...patch };
-      if (patch.status && patch.status !== cur.data.status) next.history = (cur.data.history || []).concat([{ at: this.clock(), status: patch.status, reason: patch.cancel_reason || patch.fail_reason || null }]);
+      const p = onlyStatusFrom && patch.status && onlyStatusFrom.indexOf(cur.data.status) < 0 ? (({ status, started_at, ...rest }) => rest)(patch) : patch;
+      const next = { ...cur.data, ...p };
+      if (p.status && p.status !== cur.data.status) next.history = (cur.data.history || []).concat([{ at: this.clock(), status: p.status, reason: p.cancel_reason || p.fail_reason || null }]);
       const w = await this.store.put("agent_tasks", id, next, cur.rev);
       if (w.ok) return next;
     }
@@ -120,6 +123,14 @@ export class AgentTasks {
   /* Bring bot-backed tasks up to date from the bridge's own request records. */
   async refresh(task) {
     if (task.adapter !== "grokbot" || !task.request_id || !this.bridge || [TS.CANCELLED, TS.VERIFIED_COMPLETE, TS.FAILED, TS.TIMED_OUT].indexOf(task.status) >= 0) return task;
+    /* A hand-off from the orchestrator: its status comes from the bot's
+       structured reply (core/intelligence/orchestrator.js), never from the
+       bridge's coarser request status, which would race it.  Only overdue
+       is computed here. */
+    if (task.handoff_id) {
+      const overdue = OPEN_TASK.indexOf(task.status) >= 0 && this.clock() > task.deadline;
+      return overdue === !!task.overdue ? task : this.update(task.id, { overdue });
+    }
     const r = await this.bridge.getRequest(task.agent, task.request_id, {});
     if (!r.body || !r.body.ok) return task;
     const st = { requested: TS.ASSIGNED, delivered: TS.IN_PROGRESS, in_progress: TS.IN_PROGRESS, waiting: TS.WAITING, completed: TS.REPORTED_COMPLETE, failed: TS.FAILED }[r.body.request.status] || task.status;

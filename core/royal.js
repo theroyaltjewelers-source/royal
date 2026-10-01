@@ -35,6 +35,7 @@ import { createIntelligence } from "./intelligence/index.js";
 import { emailExecutor } from "./intelligence/comms.js";
 import { defaultGateway } from "./intelligence/gateway.js";
 import { toolCatalog } from "./intelligence/tools.js";
+import { AgentOrchestrator, parseAgentRequest, ordinalRef, contextFor, chooseBackend, DOMAIN_WORD, BACKEND, SPECIALIST_IDS } from "./intelligence/orchestrator.js";
 
 const MAX_COMMAND = 2000;
 const DELEGATION_TIMEOUT_MS = 8000;
@@ -52,7 +53,8 @@ export function normalizeCommand(input) {
 }
 
 export function createRoyal({ store, provider = new UnavailableProvider(), flags = {}, clock = () => Date.now(), owners = DEFAULT_OWNERS, messenger = null, tzOffsetMin = -240,
-  knowledge = null, fetcher = null, hunter = null, apollo = null, email = null, bridge = null, metrics = null, delegationTimeoutMs = DELEGATION_TIMEOUT_MS } = {}) {
+  knowledge = null, fetcher = null, hunter = null, apollo = null, email = null, bridge = null, metrics = null, delegationTimeoutMs = DELEGATION_TIMEOUT_MS,
+  botWaitMs = 12000 } = {}) {
   if (!store) throw new Error("ROYAL_CONFIG: a store is required");
   const F = { ...DEFAULT_FLAGS, ...flags };
   const registry = new AgentRegistry();
@@ -115,6 +117,12 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   /* ---------------------------------------------------- intelligence --- */
   const intelligence = createIntelligence({ provider, store, audit, gate, registry, decisions, flags: F, clock, knowledge, fetcher, hunter, apollo, email, bridge, metrics });
   for (const [name, fn] of Object.entries(intelligence.toolImpls)) if (!tools.has(name)) tools.set(name, fn);
+  /* ------------------------------------------------- the orchestrator --- */
+  /* One way to work with a specialist from the conversation, whichever
+     backend runs it (core/intelligence/orchestrator.js). */
+  const orchestrator = new AgentOrchestrator({ registry, bridge, tasks: intelligence.tasks, ledger, audit, store, gate, clock, waitMs: botWaitMs,
+    native: (agentId, args) => nativeRun(agentId, args), onLate: (conversationId, outcome) => deliverLate(conversationId, outcome) });
+  tools.set("delegate_to_bot", (args) => orchestrator.sendRaw(args));
   const gateway = defaultGateway({ connector, tools, clock, email, bridge, research: intelligence.research, contacts: intelligence.contacts });
   const INTEL_EARLY = ["calculation", "show_sources", "cancel", "revise_draft", "people_research", "contact_lookup", "outreach_draft", "prospecting", "house_knowledge"];
   const INTEL_ANY = INTEL_EARLY.concat(["world_knowledge", "current_research", "company_research", "send"]);
@@ -188,6 +196,133 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     const researchOn = intelligence && intelligence.research.status().status === "CONNECTED";
     return DOMAINS.map((d) => ({ ...d, status: d.id === "royal_t" ? (calc.status === CONNECTION.CONNECTED ? CONNECTION.CONNECTED : d.status)
       : d.id === "world" ? (researchOn ? CONNECTION.CONNECTED : d.status) : d.status }));
+  }
+
+  /* --------------------------------------------- specialists, natively --- */
+  /* A specialist's native backend: its own logic over the House's data, as
+     a House skill run in its name.  HOUSE has none. */
+  const WORKED_RE = /\b(work(ed)? on|did (today|for work)|been (doing|up to)|what (did|has) (he|she|it|they) do)\b/i;
+  function nativeSkillFor(agentId, objective, entity) {
+    const t = String(objective || "");
+    if (WORKED_RE.test(t)) return "agent_activity";
+    if (agentId === "grace") return entity ? "project_status" : "production_status";
+    if (agentId === "ledger") return entity ? "project_money" : /\b(cash|tight|runway|bank)\b/i.test(t) ? "cash_analysis" : "who_owes_us";
+    if (agentId === "ace") return entity && /\b(client|handle|follow|reach|contact|deposit)\b/i.test(t) ? "delegate_draft" : entity ? "project_money" : "sales_pipeline";
+    if (agentId === "forge") return "self_diagnostic";
+    return null;
+  }
+  async function nativeRun(agentId, { objective, context = {}, conversation_id = null, parent_request_id = null, realm = REALM.BUSINESS }) {
+    const latest = await connector.latest();
+    const projects = latest ? latest.snapshot.projects : [];
+    const pid = context.project && context.project.project_id;
+    const entity = pid ? projects.find((p) => p.id === pid) || null : null;
+    /* FORGE on speed reads ROYAL's own measurements, never a guess. */
+    if (agentId === "forge" && /\b(slow|slower|latency|lag|speed|fast|took (so )?long)\b/i.test(objective)) return forgeOnSpeed();
+    const skill = nativeSkillFor(agentId, objective, entity);
+    if (!skill || !SKILLS[skill]) return { status: RUN_STATUS.NOT_CONNECTED, summary: agentId.toUpperCase() + " has no native runtime.", findings: [] };
+    /* "What's holding it?" asks for the cause, which project_status gives to a "why". */
+    const text = skill === "project_status" && /\b(hold|holding|stuck|moved|moving|late|behind|block|blocked|waiting)\b/i.test(objective) ? "Why " + objective : objective;
+    const ctx = makeCtx({ run_id: parent_request_id || newId("run"), text, now: clock(), skill, entity, conversation: conversations.get(conversation_id || ""),
+      command: { conversation_id: String(conversation_id || "").replace(/^BUSINESS:/, ""), realm }, intent: { verb: "DELEGATE", agent: agentId } });
+    const out = await SKILLS[skill].run(ctx);
+    await Promise.allSettled(ctx.ledgerWrites);
+    return { ...out, skill };
+  }
+
+  function forgeOnSpeed() {
+    const snap = metrics ? metrics.snapshot() : null;
+    const series = snap && snap.series ? Object.entries(snap.series).filter(([k]) => /^request\./.test(k) && k !== "request.all") : [];
+    if (!snap || !series.length) return { status: RUN_STATUS.OK, skill: "speed", findings: [],
+      summary: "I have no timings recorded since this server started, so I can't say what was slow. They build up as you use me; ask again later." };
+    const all = snap.series["request.all"];
+    const slow = series.sort((a, b) => (b[1].p95_ms || 0) - (a[1].p95_ms || 0)).slice(0, 3);
+    return { status: RUN_STATUS.OK, skill: "speed", findings: [], points: slow.map(([k, s]) => k.replace(/^request\./, "") + ": p95 " + s.p95_ms + " ms over " + s.count),
+      summary: "Since this server started: " + (all ? all.count + " requests, typical " + all.p50_ms + " ms, slowest tenth " + all.p95_ms + " ms. " : "") +
+        "The slowest paths: " + slow.map(([k, s]) => k.replace(/^request\./, "").replace(/^intel:/, "") + " (p95 " + s.p95_ms + " ms)").join(", ") + "." +
+        " Paths that wait on the language model are slow because of the model call, not my own work." + (snap.series["provider.complete"] ? " Model calls run at p95 " + snap.series["provider.complete"].p95_ms + " ms." : "") };
+  }
+
+  /* What I say about one specialist's outcome: never "I asked ACE" unless a
+     hand-off was delivered, never a native check passed off as the bot's. */
+  function sayOutcome(o) {
+    const N = o.name || String(o.agent).toUpperCase();
+    if (o.status === "ANSWERED" && o.backend === BACKEND.GROKBOT) {
+      const e = o.envelope;
+      const bits = [N + " came back: " + String(o.summary || "").replace(/\s+$/, "") + (/[.!?]$/.test(o.summary || "") ? "" : ".")];
+      if (e && e.actions_taken && e.actions_taken.length) bits.push(N + " reports " + e.actions_taken.length + " action" + (e.actions_taken.length === 1 ? "" : "s") + " taken; that's its report, not verified.");
+      if (e && e.next_actions && e.next_actions.length) bits.push(N + " proposes: " + e.next_actions.slice(0, 3).map((x) => (typeof x === "string" ? x : x.action || x.summary || JSON.stringify(x))).join("; ") + ". Nothing has been done.");
+      if (e && e.requires_approval) bits.push("It says this needs your approval. Nothing has been done; tell me and I'll put it in front of you for approval.");
+      if (e && e.requested_specialist) bits.push(N + " asked for " + e.requested_specialist.toUpperCase() + "'s view, so I've asked " + e.requested_specialist.toUpperCase() + ".");
+      if (!o.valid) bits.push("(Its reply wasn't in the required format, so I've kept it as a partial answer.)");
+      return bits.join(" ");
+    }
+    if (o.status === "ANSWERED") {
+      const lead = o.delivery_failed ? "I couldn't reach " + N + "'s Grok Bot (" + o.delivery_failed.replace(/^I couldn't reach [^(]*\(|\)$/g, "") + "), so I checked that with " + N + "'s " + DOMAIN_WORD[o.agent] + " logic: "
+        : o.bot_note ? N + "'s Grok Bot isn't available (" + o.bot_note + "), so I checked that with " + N + "'s " + DOMAIN_WORD[o.agent] + " logic: "
+        : "I checked that with " + N + "'s " + DOMAIN_WORD[o.agent] + " logic: ";
+      return lead + String(o.summary || "");
+    }
+    if (o.status === "PENDING") return "I sent that to " + N + ". I'll bring the answer here when it comes.";
+    if (o.status === "FAILED") return (o.why || "I couldn't get an answer from " + N) + ".";
+    return o.why || N + " isn't available.";
+  }
+
+  /* An answer from a specialist that arrived after its request returned:
+     composed like any answer and put in that conversation's inbox. */
+  async function deliverLate(conversationId, outcome) {
+    const run_id = newId("run");
+    const summary = sayOutcome(outcome);
+    const result = agentResult({ agent: "royal", run_id, status: RUN_STATUS.OK, summary, findings: [], surface: { type: "text" }, timestamp: clock() });
+    result.skill = "agent_reply"; result.realm = REALM.BUSINESS; result.route = { reason: "AGENT_REPLY", confidence: 1 };
+    result.delegations = [{ agent: outcome.agent, status: RUN_STATUS.OK, verified: false, errors: [] }];
+    result.agent_reply = { agent: outcome.agent, backend: outcome.backend, task_id: outcome.task ? outcome.task.id : null, valid: outcome.valid !== false };
+    await attachPresentation(result, REALM.BUSINESS);
+    const convo = conversations.get(conversationId);
+    conversations.set(conversationId, { ...convo, last_summary: summary, last_points: outcome.envelope && outcome.envelope.findings && outcome.envelope.findings.length
+      ? outcome.envelope.findings.map((f) => (typeof f === "string" ? f : f.summary || f.title || JSON.stringify(f))).slice(0, 8) : [summary], last_agents: [outcome.agent] });
+    await audit.record({ actor: "royal", run_id, action: "AGENT_REPLY_DELIVERED", summary: outcome.agent + ": " + summary.slice(0, 160) });
+    return orchestrator.appendInbox(conversationId, { agent: outcome.agent, task_id: outcome.task ? outcome.task.id : null, result });
+  }
+
+  /* "Ask GRACE …", "Have GRACE and LEDGER look at Marcus together", "Talk
+     to each of the bots": the specialists Tahir named, through the
+     orchestrator, each on its own, one answer back. */
+  async function agentRequest(ask, { cmd, convo, convoKey, res, projects, run_id, ctx }) {
+    const parts = [], outcomes = [], points = [];
+    if (ask.each) {
+      /* My own records first: what each specialist ran today. */
+      const rec = await SKILLS.agent_activity.run(ctx);
+      parts.push(rec.summary);
+      const reachable = [];
+      for (const id of ask.agents) {
+        const be = await orchestrator.backends(id);
+        if (chooseBackend({ agent: id, backends: be, explicit: true, preferred: BACKEND.GROKBOT }).backend === BACKEND.GROKBOT) reachable.push(id);
+      }
+      if (reachable.length) {
+        const got = await orchestrator.delegateMany(reachable.map((id) => ({ agent_id: id, explicit: true, preferred_backend: BACKEND.GROKBOT, conversation_id: convoKey, parent_request_id: run_id,
+          objective: "Tell ROYAL what you worked on today (" + dayOf(clock()) + "): what you were given, started, finished, failed, and what is still running. Report only.", context: { day: dayOf(clock()) } })));
+        for (const o of got) { outcomes.push(o); parts.push(sayOutcome(o)); points.push(sayOutcome(o)); }
+      } else parts.push("None of them has a Grok Bot I can reach, so that's from my own records.");
+      for (const line of (rec.data && rec.data.lines) || []) points.push(line);
+    } else {
+      const entity = res.status === "RESOLVED" ? res.entity : convo.entity ? projects.find((p) => p.id === convo.entity.id) || null : null;
+      const ord = ordinalRef(cmd.content);
+      const pool = (convo.last_points && convo.last_points.length ? convo.last_points : (convo.last_items || []).map((i) => i.title + (i.detail ? ". " + i.detail : "")));
+      const item = ord === null ? null : ord === -1 ? pool[pool.length - 1] || null : pool[ord] || null;
+      let system = null;
+      if (ask.agents.indexOf("forge") >= 0) { try { system = { diagnostics: (await diagnostics()).map((d) => d.system + ": " + d.state + " (" + d.evidence + ")"), metrics: metrics ? metrics.snapshot() : null }; } catch (_) { system = null; } }
+      const got = await orchestrator.delegateMany(ask.agents.map((id) => ({ agent_id: id, objective: cmd.content, explicit: true, conversation_id: convoKey, parent_request_id: run_id,
+        entities: entity ? [entity.id] : [], context: contextFor(id, { project: entity, item, points: pool, previous: convo.last_summary || null, system }) })));
+      for (const o of got) { outcomes.push(o); parts.push(sayOutcome(o)); points.push(sayOutcome(o)); }
+      if (entity) res = { status: "RESOLVED", entity, via: "conversation", strong: true };
+    }
+    const pending = outcomes.filter((o) => o.status === "PENDING").map((o) => ({ agent: o.agent, task_id: o.task && o.task.id }));
+    const answered = outcomes.filter((o) => o.status === "ANSWERED").length, failed = outcomes.filter((o) => ["FAILED", "UNAVAILABLE", "REFUSED"].indexOf(o.status) >= 0).length;
+    for (const o of outcomes) ctx.delegations.push({ agent: o.agent, status: o.status === "ANSWERED" ? RUN_STATUS.OK : o.status === "PENDING" ? RUN_STATUS.PARTIAL : RUN_STATUS.FAILED,
+      verified: o.status === "ANSWERED" && o.backend === BACKEND.NATIVE, errors: o.status === "ANSWERED" || o.status === "PENDING" ? [] : [o.why || o.status] });
+    const draft = outcomes.find((o) => o.pending_draft);
+    return { pending_draft: draft ? draft.pending_draft : undefined, status: !outcomes.length ? RUN_STATUS.OK : answered || pending.length ? (failed ? RUN_STATUS.PARTIAL : RUN_STATUS.OK) : RUN_STATUS.FAILED,
+      summary: parts.join(" ").replace(/\s+/g, " ").trim(), findings: [], surface: { type: "text" }, pending, outcomes, points: points.slice(0, 10), entityRes: res };
   }
 
   /* ---------------------------------------------------- open questions --- */
@@ -287,6 +422,18 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
         }
       } catch (e) { out.push({ system: "Grok Bots", state: X, evidence: "couldn't read the bridge: " + (e.message || e) }); }
     } else out.push({ system: "Grok Bots", state: N, evidence: "the bridge isn't running" });
+    /* Each specialist, with both of its backends: diagnostics only, never
+       the main screen. */
+    for (const id of SPECIALIST_IDS) {
+      try {
+        const be = await orchestrator.backends(id);
+        const g = be.grokbot, ago = (t) => { const m = Math.round((clock() - Date.parse(t)) / 60000); return m < 1 ? "just now" : m < 120 ? m + " minutes ago" : Math.round(m / 60) + " hours ago"; };
+        const botTxt = g.configured ? "Grok Bot " + String(g.connection).toLowerCase().replace(/_/g, " ") + (g.last_verified_at ? ", last round trip " + ago(g.last_verified_at) + (g.last_roundtrip_ms != null ? " (" + g.last_roundtrip_ms + " ms)" : "") : "") : "no Grok Bot set up";
+        const healthy = be.native.available || g.connection === "CONNECTED_VERIFIED";
+        out.push({ system: "Specialist " + id.toUpperCase(), state: healthy ? (g.configured && g.connection !== "CONNECTED_VERIFIED" && g.connection !== "CONFIGURED_UNVERIFIED" ? D : H) : g.can_send ? D : N,
+          evidence: (be.native.available ? "native runtime available" : "no native runtime") + "; " + botTxt });
+      } catch (e) { out.push({ system: "Specialist " + id.toUpperCase(), state: X, evidence: "couldn't check: " + (e.message || e) }); }
+    }
     return out;
   }
 
@@ -373,6 +520,11 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       : interpret(cmd.content, { entityResolved: res.status === "RESOLVED", entityStrong: !!res.strong, entityFromConversation: res.via === "conversation" });
     let r = { skill: intent.skill, reason: intent.reason, confidence: intent.confidence };
     if (!SKILLS[r.skill] && r.skill !== "open_question") r = { skill: "open_question", reason: "UNKNOWN_SKILL" };
+    /* Tahir named a specialist ("Ask GRACE …", "Have GRACE and LEDGER look
+       at Marcus", "Talk to each of the bots"): the orchestrator takes it,
+       and reaches the real bot where one can be reached. */
+    const ask = cmd.skill ? null : parseAgentRequest(cmd.content);
+    if (ask) r = { skill: "agent_request", reason: ask.each ? "EACH_AGENT" : "EXPLICIT_AGENT", confidence: 0.9 };
     /* "Does it affect Saturday?" names the record under discussion and no
        rule: with the language provider it is answered as a question about
        that record; without one, the record itself is the honest answer. */
@@ -389,7 +541,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
     if (followUp && intent.reason === "CONCEPT") r = { skill: "open_question", reason: "ENTITY_FOLLOW_UP" };
     else if (!cmd.skill && intent.reason === "CONCEPT") intel = { intent: "world_knowledge", needs_current_web: false, entities: { topic: cmd.content.slice(0, 200) },
       research_depth: "QUICK", response_mode: "brief", interpreted_by: "rules", confidence: 0.7 };
-    else if (!cmd.skill && ["FAST_PATH", "LEDGER"].indexOf(intent.reason) < 0) {
+    else if (!cmd.skill && !ask && ["FAST_PATH", "LEDGER"].indexOf(intent.reason) < 0) {
       const pre = intelligence.preclassify(cmd.content, convo);
       /* "Send it" with an outreach email open goes to the intelligence layer,
          which asks which one when a House update is also waiting.  Naming
@@ -444,6 +596,9 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       if (res.status === "AMBIGUOUS" && (ENTITY_SKILLS.indexOf(r.skill) >= 0 || r.skill === "open_question")) {
         out = { status: RUN_STATUS.NEEDS_CLARIFICATION, summary: "More than one commission matches. Which one?", findings: [],
           surface: { type: "clarify", candidates: res.candidates.map((p) => ({ id: p.id, name: p.name, client_name: p.client && p.client.name, stage: p.stage })) } };
+      } else if (ask) {
+        out = await agentRequest(ask, { cmd, convo, convoKey, res, projects, run_id, ctx });
+        if (!base.entity && out.entityRes && out.entityRes.status === "RESOLVED") base.entity = out.entityRes.entity;
       } else if (res.status === "NOT_FOUND") {
         out = { status: RUN_STATUS.OK, summary: "No commission with ID " + res.query + " is in the calculator's records" + (latest ? "." : ", and the calculator is not connected."), findings: [], surface: { type: "text" } };
       } else if (intel) {
@@ -451,9 +606,6 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
         if (!out) out = await openQuestion(cmd, ctx);
         else { r = { skill: "intel:" + intel.intent, reason: intel.interpreted_by === "model" ? "MODEL" : "RULES", confidence: intel.confidence };
           for (const d of out.delegations || []) ctx.delegations.push(d); }
-      } else if (r.skill === "delegate_draft" && intent.agent && registry.get(intent.agent) && registry.get(intent.agent).status !== "ACTIVE" && F.advanced_agent_orchestration && bridge) {
-        out = await intelligence.doBotDelegation(intent.agent, cmd.content, convo, convoKey);
-        for (const d of out.delegations || []) ctx.delegations.push(d);
       } else if (r.skill === "open_question") {
         out = await openQuestion(cmd, ctx);
       } else {
@@ -490,7 +642,12 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
       ...(out.context || {}),
       open_decisions: out.context && out.context.open_decisions ? out.context.open_decisions : open_decisions,
       focus: out.context && out.context.focus ? out.context.focus : (base.entity ? "house" : convo.focus || null),
+      /* What "the second thing" and "that" refer to next turn. */
+      last_summary: String(result.summary || "").slice(0, 1200),
+      last_points: out.points || (out.data && out.data.lines) || (result.findings || []).map((f) => f.title + (f.detail ? ". " + f.detail : "")).slice(0, 10),
+      last_agents: (out.outcomes || []).map((o) => o.agent),
     });
+    if (out.pending && out.pending.length) result.pending = out.pending;
     result.intent = intel ? { verb: "INTEL", intent: intel.intent, interpreted_by: intel.interpreted_by, agent: (intel.entities && intel.entities.agent) || null } : { verb: intent.verb, agent: intent.agent || null };
     if (out.reasoning) result.reasoning = out.reasoning;
     await attachPresentation(result, REALM.BUSINESS);
@@ -527,7 +684,7 @@ export function createRoyal({ store, provider = new UnavailableProvider(), flags
   }
 
   return {
-    handle, ingestCalculator, registry, permissions, decisions, audit, events, connector, gate, store, health, ledger, diagnostics,
+    handle, ingestCalculator, registry, permissions, decisions, audit, events, connector, gate, store, health, ledger, diagnostics, orchestrator,
     flags: F, provider, intelligence, gateway, metrics,
     tools: () => toolCatalog({ web_search: intelligence.research.status().status === "CONNECTED", x_search: !!(F.x_search && provider.capabilities && provider.capabilities().x_search),
       company_search: intelligence.research.status().status === "CONNECTED", person_search: intelligence.research.status().status === "CONNECTED",

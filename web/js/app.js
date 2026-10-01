@@ -367,7 +367,46 @@ async function submit(text, modality, { speak = true } = {}) {
   const done = () => finish(spec, res);
   /* With realtime voice on, the voice says it; the browser stays quiet. */
   if (!speak || (rt && rt.active) || !voice.speak(spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
+  /* A specialist's Grok Bot is still working on part of this: its answer
+     comes back to this conversation, and I show it when it arrives. */
+  if (res.pending && res.pending.length) listenForReplies();
   return res;
+}
+
+/* ------------------------------------------------- specialist replies --- */
+/* Answers from a specialist's Grok Bot that arrive after the question was
+   answered.  The server keeps them in this conversation's inbox; the page
+   asks every few seconds while hand-offs are open, for at most 15 minutes,
+   and shows each one when Tahir is not speaking, listening or mid-answer. */
+const seenReplies = new Set();
+let replyTimer = null, replyUntil = 0, replyQueue = [];
+function listenForReplies() {
+  replyUntil = Date.now() + 15 * 60000;
+  if (!replyTimer) replyTimer = setTimeout(pollReplies, 3000);
+}
+async function pollReplies() {
+  replyTimer = null;
+  if (REALM !== "BUSINESS" || !TOKEN) return;
+  const r = await api("GET", "/v1/inbox?realm=BUSINESS&conversation_id=" + encodeURIComponent(CONVO));
+  if (r.ok) {
+    for (const it of r.items || []) if (!seenReplies.has(it.id)) { seenReplies.add(it.id); replyQueue.push(it); }
+    showReplies();
+    if ((r.open > 0 || replyQueue.length) && Date.now() < replyUntil) replyTimer = setTimeout(pollReplies, 3000);
+  } else if (Date.now() < replyUntil) replyTimer = setTimeout(pollReplies, 6000);
+}
+function showReplies() {
+  if (!replyQueue.length) return;
+  if (busy || voice.speaking || ["LISTENING", "UNDERSTANDING", "THINKING", "RESPONDING"].indexOf(state.state) >= 0) { setTimeout(showReplies, 1500); return; }
+  const it = replyQueue.shift();
+  const res = it.result || {};
+  const v = validateSpec(res.presentation || {});
+  if (!v.ok) { stage.setCaption(String(res.summary || ""), { tone: "attention" }); return showReplies(); }
+  turn++;
+  state.go("RESPONDING"); sound.play("returned");
+  stage.show(v.spec);
+  stage.setCaption(v.spec.speech || res.summary || "", { tone: v.spec.tone });
+  const done = () => { finish(v.spec, res); setTimeout(showReplies, 400); };
+  if ((rt && rt.active) || !voice.speak(v.spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
 }
 
 function finish(spec, res) {

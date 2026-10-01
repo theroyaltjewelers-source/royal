@@ -71,6 +71,25 @@ export class AgentActivityLedger {
     return null;
   }
 
+  /* A hand-off to the agent's Grok Bot: sent, returned (with or without a
+     valid envelope) or failed.  Counted apart from native runs, so the
+     day's record says which work went to the bot. */
+  async noteDelegation({ agent, phase, task_id = null, valid = null, error = null }) {
+    const at = this.clock(), day = dayOf(at, this.tz), id = agent + ":" + day;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (attempt) await backoff(attempt);
+      const cur = await this.store.get("agent_day", id);
+      const d = cur ? { ...cur.data } : { agent, day, runs: 0, ok: 0, failed: 0, timed_out: 0, not_connected: 0, findings: 0, objectives: {}, first_at: at, recent: [] };
+      const b = { sent: 0, returned: 0, failed: 0, invalid: 0, ...(d.bot || {}) };
+      if (phase === "sent") b.sent++; else if (phase === "returned") { b.returned++; if (valid === false) b.invalid++; } else b.failed++;
+      d.bot = b; d.last_at = at;
+      d.bot_recent = [{ at, phase, task_id, valid, error: error ? String(error).slice(0, 160) : null }].concat(d.bot_recent || []).slice(0, 12);
+      const w = await this.store.put("agent_day", id, d, cur ? cur.rev : null);
+      if (w.ok) return d;
+    }
+    return null;
+  }
+
   async day(agent, day) { const r = await this.store.get("agent_day", agent + ":" + day); return r ? r.data : null; }
 
   /* Everything known about each agent for one day, from ROYAL's own records
