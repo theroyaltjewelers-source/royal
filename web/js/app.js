@@ -186,7 +186,7 @@ async function askFromVoice(text) {
 
 function offline() {
   state.go("OFFLINE"); stage.clear();
-  stage.setCaption("ROYAL can't be reached right now. Nothing was done.", { quiet: true });
+  stage.setCaption("I can't reach my server right now. Nothing was done.", { quiet: true });
   $("retry").hidden = false;
 }
 $("retry").addEventListener("click", () => { $("retry").hidden = true; start(); });
@@ -336,7 +336,7 @@ async function submit(text, modality, { speak = true } = {}) {
     if (r.unauthorized) { store.set("royal.session", null); TOKEN = null; state.go("OFFLINE"); return showSignIn("Your session ended. Sign in again."); }
     state.go("FAILURE", "request failed"); sound.play("failure");
     const spec = { version: 1, mode: "error", realm: REALM, tone: "attention", speech: r.message || "That didn't go through.", focus_entity: null, agents: [],
-      surfaces: [{ type: "ERROR_OBJECT", data: { attempted: "Ask ROYAL: " + text.slice(0, 200), failed_because: r.network ? "ROYAL could not be reached." : (r.message || "The request failed."), impact: "Nothing was done.", next_action: "Try again in a moment." } }] };
+      surfaces: [{ type: "ERROR_OBJECT", data: { attempted: "Ask ROYAL: " + text.slice(0, 200), failed_because: r.network ? "I couldn't reach my server." : (r.message || "The request failed."), impact: "Nothing was done.", next_action: "Try again in a moment." } }] };
     stage.show(validateSpec(spec).spec); stage.setCaption(spec.speech, { tone: "attention" });
     if (r.network) $("retry").hidden = false;
     return settle();
@@ -427,7 +427,7 @@ async function resolve(card, resolution, modified) {
   else if (d.status === "VERIFIED") line = "Done, and checked.";
   else if (d.status === "EXECUTED") line = "Done. Not yet independently checked.";
   else if (d.status === "FAILED") { line = "Approved, but carrying it out failed: " + (x.failed_because || "unknown") + "."; tone = "attention"; }
-  else if (x.result === "NO_EXECUTOR") line = "Approved and recorded. Nothing was " + (d.action && /send/.test(d.action.tool || "") ? "sent" : "carried out") + ": ROYAL can't do this itself yet, so someone on the team needs to.";
+  else if (x.result === "NO_EXECUTOR") line = "Approved and recorded. Nothing was " + (d.action && /send/.test(d.action.tool || "") ? "sent" : "carried out") + ": I can't do this myself yet, so someone on the team needs to.";
   else line = "Recorded as " + String(d.status || "").toLowerCase() + ".";
   const acts = card.querySelector(".dec-a"); if (acts) acts.remove();
   card.classList.remove("st-OPEN"); card.classList.add("st-" + (d ? d.status : "ERR"));

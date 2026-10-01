@@ -9,6 +9,7 @@ import { createRoyal } from "../core/royal.js";
 import { stableHash } from "../core/util.js";
 import { passcodeAuth } from "./passcode.js";
 import { isBotToken } from "../core/grokbot/tokens.js";
+import { identityPrompt } from "../core/identity.js";
 
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
@@ -145,7 +146,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     if (isBotToken(token[1])) {
       if (!bridge) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
       let principal;
-      try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check that token. Nothing was done."); }
+      try { principal = await bridge.authenticate(token[1]); } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check that token. Nothing was done."); }
       if (!principal) {
         /* Slow down guessing: invalid bot tokens are limited per address. */
         const who = (req.headers.get("x-forwarded-for") || "anon").split(",")[0].trim();
@@ -157,14 +158,14 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       catch (e) {
         if (e.status) return fail(req, e.status, e.code, e.message);
         await royal.audit.record({ actor: "bot:" + principal.bot_id, action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
-        return fail(req, 500, "SERVER_ERROR", "ROYAL hit an internal error. Nothing was changed.");
+        return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
       }
     }
     let user;
     try {
       user = passcode ? await passcode.verify(token[1]) : undefined;
       if (user === undefined) user = await auth(token[1]);
-    } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "ROYAL could not check your sign-in. Nothing was done."); }
+    } catch (e) { return fail(req, 503, "AUTH_UNAVAILABLE", "I couldn't check your sign-in. Nothing was done."); }
     if (!user) return fail(req, 401, "AUTH_INVALID", "That sign-in is not valid or has expired.");
     /* House members may keep ROYAL current by sending the calculator's state,
        and do nothing else: they cannot read answers, decisions or activity. */
@@ -249,14 +250,14 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
            voice, so every device sounds the same.  Business only, like
            realtime voice: nothing from the Personal side reaches xAI.  The
            browser falls back to the device's own voice on any refusal. */
-        if (!royal.flags.spoken_voice) return fail(req, 409, "SPEECH_DISABLED", "ROYAL's voice is switched off (spoken_voice). The device's own voice is used.");
-        if (realmQ === "PERSONAL") return fail(req, 409, "SPEECH_BUSINESS_ONLY", "ROYAL's voice speaks on the Business side only. The device's own voice is used in Personal.");
+        if (!royal.flags.spoken_voice) return fail(req, 409, "SPEECH_DISABLED", "My voice is switched off (spoken_voice). Your device's own voice is used.");
+        if (realmQ === "PERSONAL") return fail(req, 409, "SPEECH_BUSINESS_ONLY", "My voice speaks on the Business side only. In Personal, your device's own voice is used.");
         if (!royal.provider.speech || !(royal.provider.capabilities && royal.provider.capabilities().speech))
-          return fail(req, 409, "SPEECH_NOT_CONFIGURED", "ROYAL's voice needs XAI_API_KEY on the server.");
+          return fail(req, 409, "SPEECH_NOT_CONFIGURED", "My voice needs XAI_API_KEY on the server.");
         const b = await body(req);
         const text = String((b && b.text) || "").replace(/\s+/g, " ").trim();
         if (!text) return fail(req, 400, "TEXT_REQUIRED", "Nothing to say.");
-        if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "ROYAL speaks at most " + SPEECH_MAX + " characters at a time.");
+        if (text.length > SPEECH_MAX) return fail(req, 400, "TEXT_TOO_LONG", "I speak at most " + SPEECH_MAX + " characters at a time.");
         const key = royal.provider.voice + "\u0000" + text;
         let audio = speechCache.get(key);
         if (audio) { speechCache.delete(key); speechCache.set(key, audio); }
@@ -298,7 +299,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     } catch (e) {
       if (e.status) return fail(req, e.status, e.code, e.message);
       await royal.audit.record({ actor: "system", action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
-      return fail(req, 500, "SERVER_ERROR", "ROYAL hit an internal error. Nothing was changed.");
+      return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
     }
   };
 }
@@ -355,8 +356,9 @@ export function voiceSessionConfig(voice = "ara") {
     voice, turn_detection: { type: "server_vad" },
     audio: { input: { format: { type: "audio/pcm", rate: 24000 } }, output: { format: { type: "audio/pcm", rate: 24000 } } },
     instructions: [
-      "You are the voice of ROYAL, the private intelligence of The House of Royal T, speaking with Tahir, its founder.",
-      "Manner: calm, warm, measured, confident, brief. Natural pauses. No jokes unless Tahir jokes. No accent affectation.",
+      identityPrompt(),
+      "VOICE: You are speaking aloud. Calm, warm, measured, confident, brief. Natural pauses. One or two sentences unless Tahir asks for more; the details are on his screen. No jokes unless Tahir jokes. No accent affectation.",
+      "When something needs checking, say a two or three word acknowledgement first (\"I'll check.\", \"One moment.\") and then call ask_royal. Never say it worked before ask_royal says so.",
       "For anything about the House, clients, projects, money, production, policy, research, people, companies, drafts, sending, or any action, call ask_royal with Tahir's exact words, then say what it returns in your own brief words.",
       "Never answer those from your own knowledge. Never say something was sent, done or approved unless ask_royal says so. Approvals happen on screen, never by voice.",
       "If Tahir interrupts, stop and listen. Keep answers short unless he asks for more.",

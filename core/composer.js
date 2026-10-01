@@ -186,6 +186,19 @@ function fromSurface(sf, result) {
   }
 }
 
+/* What ROYAL says aloud is shorter than what it shows.  A long answer is
+   spoken as its first sentence or two (up to about 240 characters), with a
+   pointer to the screen when there is more to see there. */
+export function spokenFrom(text, { onScreen = false } = {}) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (t.length <= 240) return t;
+  const sentences = t.match(/[^.!?]+[.!?]+(\s|$)/g) || [t];
+  let out = "";
+  for (const s of sentences) { if ((out + s).length > 240 && out) break; out += s; }
+  out = out.trim() || t.slice(0, 240).replace(/\s+\S*$/, "") + ".";
+  return out + (onScreen ? " The rest is on your screen." : "");
+}
+
 export function compose(result, { realm = "BUSINESS" } = {}) {
   const { mode, surfaces, focus } = fromSurface(result.surface, result);
   const agents = (result.delegations || []).map((d) => ({ id: d.agent, name: String(d.agent).toUpperCase(),
@@ -196,7 +209,7 @@ export function compose(result, { realm = "BUSINESS" } = {}) {
   const spec = {
     version: SPEC_VERSION, realm, tone: failed ? "attention" : tone,
     mode: failed ? "error" : mode,
-    speech: String(result.summary || "").slice(0, 1200),
+    speech: spokenFrom(result.summary, { onScreen: true }).slice(0, 1200),
     focus_entity: focus && focus.id ? { type: "project", id: String(focus.id) } : (result.entity ? { type: "project", id: result.entity.id } : null),
     agents,
     surfaces: failed ? [{ type: "ERROR_OBJECT", data: { attempted: s(result.skill || "your request", 300), failed_because: s(result.summary, 500), impact: "No conclusion was drawn and nothing was changed." } }] : surfaces,

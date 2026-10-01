@@ -5,6 +5,9 @@
 
    Rules are ordered: the first match wins. */
 
+import { fastPath } from "./identity.js";
+import { definitionQuery } from "./house_language.js";
+
 export const INTENTS = [
   { skill: "handle_it",         re: /^\s*(royal,?\s*)?(handle it|take care of (it|that|this)|deal with (it|that))\b/i },
   { skill: "personal",          re: /\b(my (calendar|schedule|wealth|net worth|portfolio|personal)|personal (tasks?|finances?)|appointments? (today|tomorrow)|what'?s on my calendar)\b/i },
@@ -31,6 +34,12 @@ const ABOUT_ENTITY = /\b(status|where is|where'?s|why (hasn'?t|has not|isn'?t|is
 export function route(text, { entityResolved = false, entityStrong = entityResolved } = {}) {
   const t = String(text || "").trim();
   if (!t) return { skill: null, confidence: 0, reason: "EMPTY" };
+  /* The fast path: a greeting, "who are you", thanks, or what a House word
+     means.  Answered from ROYAL's identity and the House language, with no
+     model call, so they come back at once. */
+  const fp = fastPath(t);
+  if (fp) return { skill: fp, confidence: 0.95, reason: "FAST_PATH" };
+  if (definitionQuery(t)) return { skill: "house_term", confidence: 0.9, reason: "FAST_PATH" };
   if (entityResolved && ABOUT_ENTITY.test(t)) return { skill: "project_status", confidence: 0.9, reason: "ENTITY_QUESTION" };
   for (const r of INTENTS) if (r.re.test(t)) return { skill: r.skill, confidence: 0.85, reason: "RULE" };
   if (entityResolved && entityStrong) return { skill: "project_status", confidence: 0.6, reason: "ENTITY_ONLY" };

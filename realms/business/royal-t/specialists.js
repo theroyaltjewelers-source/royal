@@ -197,15 +197,15 @@ export async function forge(ctx) {
   const findings = [];
   const st = await ctx.connector.status(ctx.now);
   if (!st.connected)
-    findings.push(item({ kind: "SYSTEM", code: "CALCULATOR_NOT_CONNECTED", agent: "forge", title: "ROYAL cannot see the calculator",
-      detail: "No calculator state has reached ROYAL, so nothing about projects, clients or money can be verified.",
+    findings.push(item({ kind: "SYSTEM", code: "CALCULATOR_NOT_CONNECTED", agent: "forge", title: "I can't see the calculator",
+      detail: "No calculator state has reached me, so nothing about projects, clients or money can be verified.",
       priority: P.P2, risk: R.ORANGE, need: N.DO, owner: ctx.owners.systems,
-      next_action: "Open the calculator while signed in. It sends its state to ROYAL automatically.",
+      next_action: "Open the calculator while signed in. It sends its state to me automatically.",
       evidence: { label: E.VERIFIED, source: "royal.health", verified_at: ctx.now } }));
   else {
     if (st.freshness === "STALE")
       findings.push(item({ kind: "SYSTEM", code: "CALCULATOR_STALE", agent: "forge", title: "Calculator data is stale",
-        detail: "What ROYAL knows was " + st.age + ". Answers are labelled with that age.", priority: P.P3, risk: R.YELLOW, need: N.KNOW,
+        detail: "What I know was " + st.age + ". Answers are labelled with that age.", priority: P.P3, risk: R.YELLOW, need: N.KNOW,
         owner: ctx.owners.systems, next_action: "Open the calculator to refresh.", evidence: { label: E.VERIFIED, source: "royal.health", verified_at: ctx.now } }));
     if (st.partial)
       findings.push(item({ kind: "SYSTEM", code: "CALCULATOR_PARTIAL", agent: "forge", title: "Calculator loaded only part of the records",

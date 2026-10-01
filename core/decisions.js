@@ -131,7 +131,7 @@ export class DecisionService {
     const fn = this.executors.get(d.action.tool);
     let execution;
     if (!fn) {
-      execution = { result: "NO_EXECUTOR", failed_because: "ROYAL has no connected way to carry out " + d.action.tool + " in this version.",
+      execution = { result: "NO_EXECUTOR", failed_because: "I have no connected way to carry out " + d.action.tool + " in this version.",
         next_action: "A person carries this out. The approval is recorded." };
     } else {
       try {

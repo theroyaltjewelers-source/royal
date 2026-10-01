@@ -19,6 +19,7 @@
 import { providerLine } from "../../web/js/notices.js";
 import { EVIDENCE as E, RUN_STATUS, CONFIDENCE as C, EMAIL_STATUS as ES, PRIORITY as P, RISK as R } from "../enums.js";
 import { stableHash, newId } from "../util.js";
+import { systemPrompt } from "../identity.js";
 import { S } from "./jsonschema.js";
 import { calculate } from "./calc.js";
 import { classify, classifyByRules } from "./intent_engine.js";
@@ -81,8 +82,8 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     let answer = null, used = hits.slice(0, 2), unknowns = [];
     if (modelOn() && caps().structured_output) {
       const r = await provider.structured({ name: "house_answer", schema: KNOWLEDGE_SCHEMA, level: 1, timeout_ms: 20000,
-        system: ["Answer Tahir's question only from the House passages in <data>. Quote numbers exactly. If a passage's status is not ACTIVE, say it is not decided policy.",
-          "If the passages do not answer it, say so and list what is unknown. " + UNTRUSTED, HOUSE_VOICE.split(" Sign")[0]].join("\n"),
+        system: systemPrompt("TASK: Answer Tahir's question only from the House passages in <data>. Quote numbers exactly. If a passage's status is not ACTIVE, say it is not decided policy.",
+          "If the passages do not answer it, say so and list what is unknown. " + UNTRUSTED),
         messages: [{ role: "user", content: "<data>" + JSON.stringify(hits.map((h) => ({ id: h.id, source: h.citation, status: h.policy_status || h.doc_status, text: h.text.slice(0, 1500) }))) + "</data>\nQuestion: " + text }] });
       if (r.ok) { answer = r.value.answer; used = hits.filter((h) => r.value.used.indexOf(h.id) >= 0); unknowns = r.value.unknowns; if (!used.length) used = hits.slice(0, 1); }
     }
@@ -107,7 +108,7 @@ export function createIntelligence({ provider, store, audit, gate, registry, dec
     }
     if (modelOn() && policy.use_model) {
       const r = await provider.complete({ level: policy.model_tier === "fast" ? 1 : policy.level, max_tokens: policy.max_tokens,
-        system: "You are ROYAL. Answer briefly and accurately from general knowledge. If you are not sure, say so. If the answer may have changed recently, say it may be out of date. No em dashes.\n" + UNTRUSTED,
+        system: systemPrompt("TASK: Answer briefly and accurately from general knowledge. If you are not sure, say so. If the answer may have changed recently, say it may be out of date.", UNTRUSTED),
         messages: [{ role: "user", content: text }] });
       if (r.ok) return say(RUN_STATUS.OK, r.text.slice(0, 1500), { type: "world", label: E.MODEL_KNOWLEDGE, note: "From the language model's general knowledge, not checked against a source." });
       if (rs.status === "CONNECTED" && policy.allow_search) return doResearch(text, intent, policy);

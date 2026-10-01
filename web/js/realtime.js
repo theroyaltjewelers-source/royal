@@ -93,8 +93,8 @@ export class RealtimeVoice {
     else {
       this._state("thinking");
       const r = await this.ask(String(args.request).slice(0, 2000));
-      output = r ? { say: r.summary, status: r.status, needs_approval: !!(r.presentation && r.presentation.surfaces.some((p) => p.type === "DECISION_OBJECT" && p.data.status === "OPEN")),
-        note: "Approvals happen on screen. Do not say anything was sent or done unless 'say' says so." } : { say: "I couldn't reach ROYAL just now." };
+      output = r ? { say: (r.presentation && r.presentation.speech) || r.summary, status: r.status, needs_approval: !!(r.presentation && r.presentation.surfaces.some((p) => p.type === "DECISION_OBJECT" && p.data.status === "OPEN")),
+        note: "Approvals happen on screen. Do not say anything was sent or done unless 'say' says so." } : { say: "I couldn't check that just now." };
     }
     if (!this.ws || this.ws.readyState !== 1) return;
     this.ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: e.call_id, output: JSON.stringify(output) } }));

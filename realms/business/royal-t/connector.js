@@ -28,7 +28,7 @@ export class RoyalTConnector {
       await this.audit.record({ actor, action: "INGEST_REJECTED", summary: "A calculator snapshot was refused: " + v.errors[0],
         error: v.errors.join("; "), executive: false });
       return { ok: false, attempted: "ingest calculator snapshot", failed_because: "INVALID_SNAPSHOT", errors: v.errors,
-        impact: "ROYAL kept the last good snapshot.", retryable: false };
+        impact: "I kept the last good snapshot.", retryable: false };
     }
     const digest = stableHash(snapshot.projects.map((p) => [p.id, p.stage, p.paid, p.value, p.due, p.health && p.health.s])
       .concat([snapshot.treasury && snapshot.treasury.inbox && snapshot.treasury.inbox.map((i) => i.key)]));
@@ -97,7 +97,7 @@ export class RoyalTConnector {
     async function read(pick) {
       const l = await self.latest();
       if (!l) return { ok: false, attempted: "read calculator", failed_because: "CALCULATOR_NOT_CONNECTED",
-        impact: "No project, client or payment conclusion can be drawn.", next_action: "Open the calculator signed in, or connect it to ROYAL." };
+        impact: "No project, client or payment conclusion can be drawn.", next_action: "Open the calculator signed in, or connect it to me." };
       const now = self.clock();
       return { ok: true, data: clone(pick(l.snapshot)), evidence: { label: EVIDENCE.VERIFIED, source: "calculator",
         verified_at: l.generated_at, freshness: freshness("PROJECT_STATUS", l.generated_at, now), age: ageText(l.generated_at, now) } };

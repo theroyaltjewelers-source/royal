@@ -172,7 +172,7 @@ export class ExecutiveResearch {
       identity_confidence: confidence, role_confidence: confidence, label, cross_checked: !!confirmed, confirmed_on: confirmed ? confirmed.url : null, sources: pick.sources };
     out.claims = [claim({ subject: pick.name, predicate: role.abbr + " of " + co.name, value: pick.name + ", " + pick.title, label, sources: pick.sources,
       retrieved_at: r.retrieved_at, confidence, cross_checked: !!confirmed, freshness_class: "current_role",
-      notes: confirmed ? "Name and title found together on " + hostOf(confirmed.url) + "." : "Not confirmed on a primary page by ROYAL." })];
+      notes: confirmed ? "Name and title found together on " + hostOf(confirmed.url) + "." : "I couldn't confirm it on a primary page." })];
     return out;
   }
 }

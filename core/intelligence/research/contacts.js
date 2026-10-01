@@ -178,13 +178,13 @@ export class ContactResearch {
             /* Published on the company's own site is PUBLICLY_LISTED; anywhere
                else it is a report, not a listing, and stays UNVERIFIED. */
             const own = sameSite(hostOf(p.final_url || s.url), person.domain);
-            found = own ? { email, status: ES.PUBLICLY_LISTED, source: s.url, found_by: "the company's own site (confirmed on the page by ROYAL)" }
+            found = own ? { email, status: ES.PUBLICLY_LISTED, source: s.url, found_by: "the company's own site (I confirmed it on the page)" }
               : { email, status: ES.UNVERIFIED, source: s.url, found_by: "a third-party page (" + hostOf(s.url) + "), not the company's own site" };
             break;
           }
         }
         if (found) break;
-        notes.push("A public source mentioned " + email + ", but ROYAL could not find it written on the cited page, so it was not used.");
+        notes.push("A public source mentioned " + email + ", but I couldn't find it written on the cited page, so I didn't use it.");
       }
     }
 
@@ -206,7 +206,7 @@ export class ContactResearch {
     /* A person who asked not to be listed is not looked up any other way:
        no pattern, no verification. */
     if (optedOut) return this._save(key, { status: ES.NOT_FOUND, email: null, opted_out: true, tried, person_id: person.person_id,
-      notes: ["This person asked not to be listed by the contact provider. ROYAL respects that and does not guess an address."] });
+      notes: ["This person asked not to be listed by the contact provider. I respect that and won't guess an address."] });
 
     /* 5: the company's pattern, clearly an inference. */
     if (!found && this.flags.email_discovery && this.hunter && this.hunter.configured()) {
