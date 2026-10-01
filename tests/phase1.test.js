@@ -276,3 +276,49 @@ test("why didn't GRACE finish: the recorded reason, from the ledger", async () =
     assert.match(a.summary, /GRACE on triage: it ran past its deadline/);
   } finally { SPECIALISTS.grace = saved; }
 });
+
+/* ---------------------------------------------------------------- voice --- */
+
+import { RealtimeVoice } from "../web/js/realtime.js";
+
+function liveVoice(ask = async () => ({ summary: "Done.", status: "OK" })) {
+  const pushed = [], sent = [];
+  const v = new RealtimeVoice({ api: async () => ({}), ask, onState() {}, onSaid() {}, onHeard() {} });
+  v.ctx = {}; v.pb = { push: (f) => pushed.push(f), stop() {}, begin() {}, end() {} };
+  v.ws = { readyState: 1, send: (x) => sent.push(JSON.parse(x)) };
+  const ev = (o) => v._event(JSON.stringify(o));
+  const pcm = Buffer.from(new Uint8Array(480)).toString("base64");
+  return { v, pushed, sent, ev, pcm };
+}
+
+test("barge-in: audio still in flight from the interrupted reply is dropped, never played", async () => {
+  const { v, pushed, sent, ev, pcm } = liveVoice();
+  await ev({ type: "response.created", response: { id: "r1" } });
+  await ev({ type: "response.output_audio.delta", response_id: "r1", delta: pcm });
+  assert.equal(pushed.length, 1);
+  await ev({ type: "input_audio_buffer.speech_started" });                          /* Tahir talks over me */
+  assert.ok(sent.some((m) => m.type === "response.cancel"), "the provider is told to stop");
+  await ev({ type: "response.output_audio.delta", response_id: "r1", delta: pcm });   /* late frames of r1 */
+  await ev({ type: "response.output_audio.delta", response_id: "r1", delta: pcm });
+  assert.equal(pushed.length, 1, "nothing old plays after the interruption");
+  assert.equal(v.dropped, 2);
+  await ev({ type: "response.created", response: { id: "r2" } });
+  await ev({ type: "response.output_audio.delta", response_id: "r1", delta: pcm });   /* r1 straggler during r2 */
+  await ev({ type: "response.output_audio.delta", response_id: "r2", delta: pcm });
+  assert.equal(pushed.length, 2, "only the new reply plays");
+});
+
+test("barge-in during a check: the answer is handed back, but I don't speak it over Tahir's new turn", async () => {
+  let release; const gate = new Promise((ok) => { release = ok; });
+  const { v, sent, ev } = liveVoice(async () => { await gate; return { summary: "Marcus owes $13,000.", status: "OK" }; });
+  const call = ev({ type: "response.function_call_arguments.done", name: "ask_royal", call_id: "c1", arguments: JSON.stringify({ request: "What does Marcus owe?" }) });
+  await new Promise((ok) => setTimeout(ok, 5));
+  await ev({ type: "input_audio_buffer.speech_started" });
+  release(); await call;
+  assert.ok(sent.some((m) => m.type === "conversation.item.create" && m.item.call_id === "c1"), "the tool call is closed");
+  assert.ok(!sent.some((m) => m.type === "response.create"), "no stale spoken answer");
+  /* without an interruption the answer is spoken */
+  const b = liveVoice();
+  await b.ev({ type: "response.function_call_arguments.done", name: "ask_royal", call_id: "c2", arguments: JSON.stringify({ request: "Hi" }) });
+  assert.ok(b.sent.some((m) => m.type === "response.create"));
+});
