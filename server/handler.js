@@ -14,7 +14,26 @@ import { identityPrompt } from "../core/identity.js";
 const VERSION = "0.1.0";
 const MAX_BODY = 5 * 1024 * 1024;
 
-export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 } }) {
+/* Every route the API serves, with the methods it accepts.  A known path
+   asked with the wrong method is a 405 with an Allow header, never a 404,
+   so a stale caller is told exactly what changed. */
+const ROUTES = [
+  [/^\/v1\/health$/, "GET"], [/^\/v1\/login$/, "POST"], [/^\/v1\/login-methods$/, "GET"],
+  [/^\/v1\/(status|agents|boot|skills|domains|activity|developer\/log|developer\/metrics|intelligence\/status|tools|agents\/tasks|knowledge\/search|decisions|bots|feed\/stream)$/, "GET"],
+  [/^\/v1\/(provider\/test|voice\/session|voice\/speak|command|ingest\/calculator|integrations\/grokbot\/run|integrations\/grokbot\/result)$/, "POST"],
+  [/^\/v1\/decisions\/[A-Za-z0-9_]+\/resolve$/, "POST"], [/^\/v1\/integrations\/grokbot\/result\/[0-9a-fA-F-]{36}$/, "GET"],
+  [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/token$/, "POST, DELETE"], [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(message|verify|events)$/, "POST"],
+  [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(feed|stream|requests\/[0-9a-fA-F-]{36})$/, "GET"],
+];
+export function allowedMethods(path) { const r = ROUTES.find(([re]) => re.test(path)); return r ? r[1] : null; }
+
+/* The path as it is logged: ids and tokens folded away, never the query. */
+export function routeOf(path) {
+  if (!path.startsWith("/v1/")) return path === "/" || /\.(js|css|html|png|ico|svg|txt|json)$/.test(path) ? "static" : "static:other";
+  return path.replace(/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}/g, ":uuid").replace(/^\/v1\/decisions\/[^/]+/, "/v1/decisions/:id").replace(/^\/v1\/bots\/[^/]+/, (m) => (m === "/v1/bots" ? m : "/v1/bots/:bot"));
+}
+
+export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 }, log = null }) {
   if (!royal) throw new Error("HANDLER_CONFIG: royal is required");
   if (!auth) throw new Error("HANDLER_CONFIG: auth is required");
   const hits = new Map();
@@ -119,16 +138,51 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     return fail(req, 405, "METHOD_NOT_ALLOWED", "That method is not supported here.");
   }
 
-  return async function handle(req) {
+  /* One line per request: method, folded route, status, duration, error
+     code and a request id the response also carries.  Never a body, a
+     query string, a token or a key.  Health checks and static files are
+     logged only when they fail. */
+  const started = Date.now();
+  async function handle(req) {
+    const t0 = Date.now(), rid = Math.random().toString(36).slice(2, 10);
+    const head = req.method === "HEAD";
+    let res;
+    try { res = await route(head ? new Request(req.url, { method: "GET", headers: req.headers, signal: req.signal }) : req); }
+    catch (e) { res = fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed."); }
+    const h = new Headers(res.headers); h.set("X-Request-Id", rid);
+    const out = new Response(head ? null : res.body, { status: res.status, headers: h });
+    if (log) {
+      const p = new URL(req.url).pathname.replace(/\/+$/, "") || "/", r = routeOf(p);
+      if (res.status >= 400 || (p.startsWith("/v1/") && p !== "/v1/health")) {
+        let code = null;
+        if (res.status >= 400 && /json/.test(res.headers.get("content-type") || "")) { try { code = (await res.clone().json()).error || null; } catch (_) {} }
+        try { log({ at: new Date().toISOString(), request_id: rid, method: req.method, route: r, status: res.status, ms: Date.now() - t0, error: code }); } catch (_) {}
+      }
+    }
+    return out;
+  }
+  handle.routeOf = routeOf;
+  return handle;
+
+  async function route(req) {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...SEC, ...cors(req) } });
 
     if (!path.startsWith("/v1/")) {
-      if (staticFiles && req.method === "GET") { const r = await staticFiles(path); if (r) return r; }
+      if (req.method !== "GET") return new Response(JSON.stringify({ ok: false, error: "METHOD_NOT_ALLOWED", message: "Only GET is served here." }),
+        { status: 405, headers: { "Content-Type": "application/json; charset=utf-8", Allow: "GET, HEAD", ...SEC } });
+      if (staticFiles) { const r = await staticFiles(path); if (r) return r; }
       return fail(req, 404, "NOT_FOUND", "No such route.");
     }
-    if (path === "/v1/health") return json(req, 200, { ok: true, service: "royal", version: VERSION });
+    /* Liveness: the server loop is answering.  It depends on no provider,
+       database or bot, so a slow dependency never restarts the service.
+       Depth lives behind sign-in (/v1/status, "diagnose yourself"). */
+    if (path === "/v1/health") return json(req, 200, { ok: true, service: "royal", version: VERSION, uptime_s: Math.round((Date.now() - started) / 1000) });
+    const allow = allowedMethods(path);
+    if (allow && allow.split(", ").indexOf(req.method) < 0)
+      return new Response(JSON.stringify({ ok: false, error: "METHOD_NOT_ALLOWED", message: path + " accepts " + allow + "." }),
+        { status: 405, headers: { "Content-Type": "application/json; charset=utf-8", Allow: allow + (allow.includes("GET") ? ", HEAD" : ""), ...SEC, ...cors(req) } });
 
     /* ROYAL's own sign-in: a passcode, no email. */
     if (path === "/v1/login" && req.method === "POST") {
@@ -308,7 +362,7 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       await royal.audit.record({ actor: "system", action: "SERVER_ERROR", summary: path, error: e }).catch(() => {});
       return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed.");
     }
-  };
+  }
 }
 
 /* Supabase-backed identity: the same accounts that sign in to the calculator.

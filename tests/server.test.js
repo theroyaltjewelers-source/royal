@@ -18,7 +18,7 @@ function app(extra = {}) {
 
 test("health is public and says nothing else", async () => {
   const r = await app().call("GET", "/v1/health", { token: null });
-  assert.equal(r.status, 200); assert.deepEqual(Object.keys(await r.json()).sort(), ["ok", "service", "version"]);
+  assert.equal(r.status, 200); assert.deepEqual(Object.keys(await r.json()).sort(), ["ok", "service", "uptime_s", "version"]);
 });
 test("every other route needs a signed-in owner", async () => {
   const { call } = app();
