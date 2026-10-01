@@ -264,6 +264,7 @@ test("who is asked: names, pairs and “each of the bots”; a client message st
   assert.equal(parseAgentRequest("Have GRACE prepare an update for Marcus."), null);
   assert.equal(parseAgentRequest("Have LEDGER send him a reminder."), null);
   assert.equal(parseAgentRequest("What did every Bot do today?"), null, "a question about the record stays with the ledger");
+  assert.equal(parseAgentRequest("Have house prices gone up?"), null, "house the word is not HOUSE the specialist");
   const c = contextFor("house", { project: { id: "P", name: "Ring", stage: "Production", client: { name: "X", id: "C" }, outstanding: 5, paid: 1, value: 6 } });
   assert.deepEqual(Object.keys(c.project).sort(), ["piece", "project_id", "stage", "target_date"]);
 });

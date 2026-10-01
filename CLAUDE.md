@@ -58,6 +58,8 @@ Read this before changing anything.
 
 (e) Run the Postgres tests with `TEST_DATABASE_URL=postgres://… npm test`. See `docs/grokbot-bridge.md`.
 
+(g) Normal work with a specialist goes through the orchestrator (`core/intelligence/orchestrator.js`, `delegateToAgent()`), never straight to `/v1/bots/:id/message`. The orchestrator picks native or Grok Bot, records provenance, and returns the bot's answer to the conversation that asked (inline or through `GET /v1/inbox`). The Bots panel is a direct line for inspection and debugging only. A bot answers with a structured envelope (`core/grokbot/envelope.js`); its proposals are never executed and its claims never verified by its say-so. Never say "I asked X" unless a hand-off was delivered.
+
 (f) A bot has one connection state, `connection_state`, and the page acts on `can_send` and `can_receive_tasks` from the server. `config_state` is configuration only. Never reintroduce a `status: CONNECTED` for bots, and never infer reachability in `web/`. Routed work needs `can_receive_tasks`.
 
 ## The intelligence layer (core/intelligence/)
@@ -88,4 +90,4 @@ Read this before changing anything.
 
 (f) xAI publishes no Grok Bot API: bots are reached by webhooks Tahir configures, and a bot shows CONNECTED_VERIFIED only after a real round trip: an answer with its own token to a `request_id` I sent, within 15 minutes (`ROYAL_GROK_BOT_CONNECTIVITY.md`).
 
-(h) Phase 1 is NOT READY until `npm run phase1:verify` passes against production (`ROYAL_URL`, `ROYAL_TOKEN`). The automated gates pass; the live gates have not been run. See `docs/PHASE_1_REPAIR_REPORT.md`.
+(h) Phase 1 is NOT READY until `npm run phase1:verify` passes against production (`ROYAL_URL`, `ROYAL_TOKEN`), including LIVE_ROYAL_TO_BOT with Tahir's real bots. The automated gates pass; the live gates have not been run against production. See `docs/PHASE_1_REPAIR_REPORT.md` and `docs/GROK_BOT_SETUP.md`.

@@ -423,7 +423,10 @@ export function supabaseAuth({ url, anonKey, ownerIds = [], memberIds = [], fetc
 export async function fromEnv(env, { store, providerFactory, extras = {} } = {}) {
   const flags = env.ROYAL_FLAGS ? JSON.parse(env.ROYAL_FLAGS) : {};
   const provider = providerFactory ? providerFactory(env) : undefined;
-  const royal = createRoyal({ store, provider, flags, tzOffsetMin: env.ROYAL_TZ_OFFSET_MIN ? Number(env.ROYAL_TZ_OFFSET_MIN) : -240, ...extras });
+  const royal = createRoyal({ store, provider, flags, tzOffsetMin: env.ROYAL_TZ_OFFSET_MIN ? Number(env.ROYAL_TZ_OFFSET_MIN) : -240,
+    /* How long a question waits for a Grok Bot's answer before saying it
+       will bring the answer to the conversation when it comes. */
+    botWaitMs: env.ROYAL_BOT_WAIT_MS ? Math.max(0, Math.min(25000, Number(env.ROYAL_BOT_WAIT_MS) || 0)) : 12000, ...extras });
   const ownerIds = String(env.ROYAL_OWNER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   const memberIds = String(env.ROYAL_MEMBER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   let auth = supabaseAuth({ url: env.ROYAL_IDENTITY_URL, anonKey: env.ROYAL_IDENTITY_ANON_KEY, ownerIds, memberIds });

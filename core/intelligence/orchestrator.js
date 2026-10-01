@@ -62,6 +62,8 @@ export function parseAgentRequest(text) {
   const s = SINGLE.exec(t) || OPINION.exec(t);
   if (!s) return null;
   const id = (s[1] || "").toLowerCase();
+  /* "house" is also a word ("have house prices risen?"); the specialist is written HOUSE. */
+  if (id === "house" && s[1] !== "HOUSE") return null;
   /* "Have GRACE prepare an update for Marcus" is a client message: the
      drafting skill writes it, and sending still needs approval. */
   if (DRAFT_ACTION.test(t.slice(s.index + s[0].length)) && !/\b(look|tell|explain|why|what|how|opinion|view|think)\b/i.test(t.slice(s.index + s[0].length, s.index + s[0].length + 40))) return null;
