@@ -14,7 +14,8 @@
 | `ROYAL_GROK_MODEL` | no | model id | reported (`grok-4.3`) | provider default | provider default model |
 | `ROYAL_GROK_FAST_MODEL` | no | cheaper model for light calls | unknown | same as main | main model used |
 | `ROYAL_VOICE` | no | the one voice | should be unset | `ara` | Ara. If `eve` is still set from before, remove it |
-| `ROYAL_VOICE_MODEL` | no | realtime voice model | unknown | `grok-voice-latest` | default |
+| `ROYAL_VOICE_MODEL` | no | realtime voice model (the page no longer uses realtime voice) | unknown | `grok-voice-latest` | default |
+| `ROYAL_STT_MODEL` | no | the model xAI's speech-to-text should use, if it requires one | unknown | none (xAI's default) | xAI's default model |
 | `ROYAL_FLAGS` | no | JSON feature flags (`core/permissions.js` DEFAULT_FLAGS) | unknown | all defaults | defaults: external send off, realtime voice off, spoken voice on |
 | `ROYAL_OWNER_PASSCODE` | yes | sign-in | reported | none | sign-in refused (503 PASSCODE_NOT_CONFIGURED) |
 | `ROYAL_SESSION_SECRET` | yes | signs session tokens | reported | none | sign-in off |

@@ -29,7 +29,8 @@
 | `bots.js` Check connection | POST | `/v1/bots/:id/verify?realm=` | `bridge.sendMessage` (connection_check) | owner | 200 | as send | grokbot.test.js |
 | `bots.js` issue token | POST | `/v1/bots/:id/token` | `bridge.issueToken` | owner | 201 | 404, 409 | grokbot.test.js |
 | `bots.js` revoke token | DELETE | `/v1/bots/:id/token` | `bridge.revokeToken` | owner | 200 | 404 | grokbot.test.js |
-| `realtime.js` voice start | POST | `/v1/voice/session?realm=` | `provider.voiceSession` | owner | 200 | 409 (realtime_voice off, Personal, no key), 502 | intelligence.test.js |
+| `app.js` voice engine (one finished turn) | POST | `/v1/voice/transcribe?realm=` (body: 16 kHz WAV) | inline, `provider.transcribe` | owner | 200 `{ text }` | 400 (not a WAV), 409 (off, Personal, no key: the page uses the device recognizer), 413 (over about a minute), 502 (xAI refused) | voice.test.js |
+| none (the page no longer uses it) | POST | `/v1/voice/session?realm=` | `provider.voiceSession` | owner | 200 | 409, 502 | intelligence.test.js |
 | `royal-embed.js` (calculator) | POST | `/v1/ingest/calculator` | `royal.ingestCalculator` | owner or member | 200 | 422 (invalid snapshot) | server.test.js, calculator-contract.test.js |
 | `royal-embed.js` (calculator) | POST | `/v1/command` | `royal.handle` | owner | 200 | as above | server.test.js |
 | Grok Bot (its token) | POST | `/v1/bots/:id/events` | `bridge.postEvent` | the bot's own token | 201 | 400, 403, 404, 409, 413, 429 | grokbot.test.js |
@@ -51,4 +52,6 @@ The production log was not readable from this environment, so these are the caus
 
 (e) **400, valid input checks, kept.** BAD_JSON, BAD_REALM, TEXT_REQUIRED, TEXT_TOO_LONG, QUERY_REQUIRED, and the bridge's field checks (BAD_TYPE, CONTENT_REQUIRED, BAD_REQUEST_ID, REALM_MISMATCH and the rest) reject bad input. The most likely 400 in normal use is a Grok Bot posting an event in the wrong shape (for example a `type` outside progress, result, alert, message, or a `request_id` that is not the one ROYAL sent). The page itself sends none of these in normal use: `speechPieces` keeps spoken pieces under 1200 characters and never empty.
 
-(f) **409, not 4xx errors in the bug sense.** `/v1/voice/speak` answers 409 in Personal or when the voice is off, and the page falls back to the device voice. These are expected and documented.
+(f) **Every error body was empty from the access log, fixed 2 October 2026.** The access log read each error response to record its code and left the body empty for the page, so every 4xx and 5xx message the page shows (a wrong passcode, a refused voice) arrived blank. The body is now read once and rebuilt; a test checks the page still gets the words.
+
+(g) **409, not 4xx errors in the bug sense.** `/v1/voice/speak` answers 409 in Personal or when the voice is off, and the page falls back to the device voice. These are expected and documented.

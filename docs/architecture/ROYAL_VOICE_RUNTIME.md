@@ -1,5 +1,7 @@
 # ROYAL VOICE RUNTIME
 
+*Superseded for listening, turns and barge-in on 2 October 2026 by `ROYAL_VOICE_ENGINE.md` (ADR-018): the realtime client (`web/js/realtime.js`) and the browser's one-shot recognizer described below were removed. What this says about ROYAL's spoken voice (`voice.js`, `/v1/voice/speak`, the playback queue) still holds.*
+
 *Supersedes the speech-output parts of `VOICE_ARCHITECTURE.md` where they differ. Sources: `web/js/voice.js`, `web/js/realtime.js`, `web/js/playback.js`, `POST /v1/voice/speak` and `voiceSessionConfig()` in `server/handler.js`.*
 
 ## 1. Before

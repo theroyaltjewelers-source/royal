@@ -1,5 +1,7 @@
 # VOICE ARCHITECTURE
 
+*Superseded for listening, turns and barge-in on 2 October 2026 by `ROYAL_VOICE_ENGINE.md` (ADR-018): the realtime client (`web/js/realtime.js`) and the browser's one-shot recognizer described below were removed. What this says about ROYAL's spoken voice (`voice.js`, `/v1/voice/speak`, the playback queue) still holds.*
+
 *1 October 2026: the speech-output and playback parts are superseded by `ROYAL_VOICE_RUNTIME.md` and `ROYAL_AUDIO_PIPELINE.md` (voice by sentence, one playback queue for both voice paths, tuned turn detection).*
 
 Supersedes VOICE_FUTURE.md for the web client. Browser speech: `web/js/voice.js`. Realtime voice: `web/js/realtime.js`, `web/js/pcm-worklet.js`, `POST /v1/voice/session` in `server/handler.js`. Updated 30 September 2026 from the code on branch feature/intelligence, after the security review.

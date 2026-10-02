@@ -46,6 +46,8 @@ Read this before changing anything.
 
 (d) Check changes in a browser at phone and desktop sizes, with reduced motion and without WebGL. See `docs/architecture/ROYAL_INTERACTION_ARCHITECTURE.md`.
 
+(e) Voice has one owner: the voice engine (`web/js/conversation.js`). Nothing else decides whether ROYAL is listening, and nothing listens outside it. A new voice behaviour is a state or a transition there, with a test in `tests/voice_engine.test.js`. Never claim speaker identification or a neural VAD: the detector is signal processing (`ROYAL_VOICE_ENGINE.md`).
+
 ## The Grok Bot bridge (core/grokbot/)
 
 (a) External Grok Bots are not ROYAL's specialists, even where names match. `/v1/bots` and `/v1/agents` never share state or authority.
