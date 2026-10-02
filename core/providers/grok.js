@@ -39,12 +39,12 @@ function clip(s, n = 240) { return String(s || "").replace(/\s+/g, " ").slice(0,
 function errText(j) { return String((j && (j.error && (j.error.message || j.error) || j.message)) || ""); }
 
 export class GrokProvider {
-  constructor({ apiKey, model, fastModel = null, voiceModel = "grok-voice-latest", voice = "ara", baseUrl = "https://api.x.ai/v1", fetchImpl = globalThis.fetch, timeoutMs = 45000, metrics = null }) {
+  constructor({ apiKey, model, fastModel = null, voiceModel = "grok-voice-latest", voice = "ara", sttModel = null, baseUrl = "https://api.x.ai/v1", fetchImpl = globalThis.fetch, timeoutMs = 45000, metrics = null }) {
     this.id = "grok";
     this._key = apiKey || null;
     this.model = model || null;
     this.fastModel = fastModel || null;      /* optional cheaper model for quick levels */
-    this.voiceModel = voiceModel; this.voice = voice;
+    this.voiceModel = voiceModel; this.voice = voice; this.sttModel = sttModel || null;
     this.metrics = metrics;
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.fetch = fetchImpl;
@@ -67,7 +67,7 @@ export class GrokProvider {
      on the model family; xAI documents them for the Grok 4 family. */
   capabilities() {
     const on = this.status().status !== CONNECTION.NOT_CONNECTED;
-    return { structured_output: on, tool_calling: on, search: on, x_search: on, vision: on, realtime_voice: !!this._key, speech: !!this._key, embeddings: false, reasoning_effort: false };
+    return { structured_output: on, tool_calling: on, search: on, x_search: on, vision: on, realtime_voice: !!this._key, speech: !!this._key, transcription: !!this._key, embeddings: false, reasoning_effort: false };
   }
 
   modelFor(level) { return level !== undefined && level <= 1 && this.fastModel ? this.fastModel : this.model; }
@@ -226,6 +226,36 @@ export class GrokProvider {
      (POST /v1/tts).  The same voice as realtime voice, so ROYAL sounds the
      same on every device and in both voice modes.  Returns the audio bytes;
      the key never leaves the server. */
+  /* Speech to text: one recorded turn (a WAV) to words, through xAI's
+     REST speech-to-text (POST /v1/stt, multipart: file and language; the
+     reply's `text` is the transcript).  The voice engine on the page decides
+     when a turn has ended; this only turns that turn's audio into words.
+     The audio and the words are never logged. */
+  async transcribe({ audio, language = "en", timeout_ms = 15000 } = {}) {
+    if (!this._key) return { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", retryable: false };
+    if (!audio || !audio.length) return { ok: false, failed_because: "AUDIO_EMPTY", retryable: false };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeout_ms);
+    const t0 = Date.now();
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([audio], { type: "audio/wav" }), "turn.wav");
+      form.append("language", language);
+      if (this.sttModel) form.append("model", this.sttModel);
+      const r = await this.fetch(this.baseUrl + "/stt", { method: "POST", signal: ctl.signal, headers: { Authorization: "Bearer " + this._key }, body: form });
+      let j = null; try { j = await r.json(); } catch (_) { j = null; }
+      if (!r.ok) {
+        const detail = clip(j && j.error && (j.error.message || j.error)).split(this._key).join("[key]").replace(/xai-[A-Za-z0-9]{8,}/g, "[key]");
+        return { ok: false, failed_because: "PROVIDER_HTTP_" + r.status, detail, retryable: r.status >= 500 || r.status === 429 };
+      }
+      if (!j || typeof j.text !== "string") return { ok: false, failed_because: "PROVIDER_REPLY_UNEXPECTED", retryable: true };
+      if (this.metrics) this.metrics.observe("provider.transcribe", Date.now() - t0);
+      return { ok: true, text: j.text.trim(), words: Array.isArray(j.words) ? j.words.length : null, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, failed_because: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK", retryable: true };
+    } finally { clearTimeout(timer); }
+  }
+
   async speech({ text, voice = this.voice, timeout_ms = 20000 } = {}) {
     if (!this._key) return { ok: false, failed_because: "PROVIDER_NOT_CONNECTED", retryable: false };
     const words = String(text || "").trim();

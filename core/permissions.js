@@ -85,6 +85,10 @@ export const DEFAULT_FLAGS = deepFreeze({
      September 2026) although it costs per reply; Business only; needs
      XAI_API_KEY; the device voice takes over whenever it cannot answer. */
   spoken_voice: true,
+  /* ROYAL's voice engine sends each finished turn's audio to the server to
+     be turned into words (xAI speech-to-text), Business only; elsewhere the
+     device's own recognizer is used.  Needs XAI_API_KEY. */
+  voice_transcription: true,
   advanced_agent_orchestration: false,  /* delegating to external Grok Bots from ROYAL's router */
 });
 

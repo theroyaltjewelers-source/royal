@@ -21,7 +21,7 @@ const MAX_BODY = 5 * 1024 * 1024;
 const ROUTES = [
   [/^\/v1\/health$/, "GET"], [/^\/v1\/login$/, "POST"], [/^\/v1\/login-methods$/, "GET"],
   [/^\/v1\/(status|agents|boot|skills|domains|activity|developer\/log|developer\/metrics|intelligence\/status|tools|agents\/tasks|knowledge\/search|decisions|bots|feed\/stream|inbox)$/, "GET"],
-  [/^\/v1\/(provider\/test|voice\/session|voice\/speak|command|ingest\/calculator|integrations\/grokbot\/run|integrations\/grokbot\/result)$/, "POST"],
+  [/^\/v1\/(provider\/test|voice\/session|voice\/speak|voice\/transcribe|command|ingest\/calculator|integrations\/grokbot\/run|integrations\/grokbot\/result)$/, "POST"],
   [/^\/v1\/decisions\/[A-Za-z0-9_]+\/resolve$/, "POST"], [/^\/v1\/integrations\/grokbot\/result\/[0-9a-fA-F-]{36}$/, "GET"],
   [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/token$/, "POST, DELETE"], [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(message|verify|events)$/, "POST"],
   [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(feed|stream|requests\/[0-9a-fA-F-]{36})$/, "GET"],
@@ -363,6 +363,23 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
         const key = "BUSINESS:" + cid;
         const [items, open] = await Promise.all([royal.orchestrator.readInbox(key, since), royal.orchestrator.openFor(key)]);
         return json(req, 200, { ok: true, items, open: open.length, now: Date.now() });
+      }
+      /* One finished voice turn (a 16 kHz WAV) to words.  The page's voice
+         engine decided the turn had ended; this only transcribes it.  Business
+         only, like ROYAL's spoken voice; in Personal the device's own
+         recognizer is used.  Neither the audio nor the words are logged. */
+      if (req.method === "POST" && path === "/v1/voice/transcribe") {
+        if (!royal.flags.voice_transcription) return fail(req, 409, "TRANSCRIPTION_DISABLED", "Server transcription is switched off (voice_transcription). Your device's own recognizer is used.");
+        if (realmQ === "PERSONAL") return fail(req, 409, "TRANSCRIPTION_BUSINESS_ONLY", "Server transcription is for the Business side only. In Personal, your device's own recognizer is used.");
+        if (!royal.provider.transcribe || !(royal.provider.capabilities && royal.provider.capabilities().transcription))
+          return fail(req, 409, "TRANSCRIPTION_NOT_CONFIGURED", "Server transcription needs XAI_API_KEY on the server.");
+        const audio = new Uint8Array(await req.arrayBuffer());
+        if (audio.length > 2 * 1024 * 1024) return fail(req, 413, "AUDIO_TOO_LONG", "A voice turn is at most about a minute.");
+        if (audio.length < 1000 || String.fromCharCode(...audio.subarray(0, 4)) !== "RIFF" || String.fromCharCode(...audio.subarray(8, 12)) !== "WAVE")
+          return fail(req, 400, "AUDIO_NOT_WAV", "Send the turn as a WAV.");
+        const t = await royal.provider.transcribe({ audio });
+        if (!t.ok) return json(req, 502, { ok: false, error: t.failed_because, retryable: !!t.retryable, message: "I couldn't turn that into words" + (t.detail ? " (" + t.detail + ")." : ".") });
+        return json(req, 200, { ok: true, text: t.text, ms: t.ms });
       }
       if (req.method === "GET" && path === "/v1/decisions") {
         const status = url.searchParams.get("status") || undefined;
