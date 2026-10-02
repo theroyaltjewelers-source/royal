@@ -93,31 +93,20 @@ test("the Core keeps real time at rest: time is measured from the last frame dra
   assert.match(core, /pulse\(a = 0\.7\) \{ this\.ampTarget = /, "a pulse eases in; it does not jump the light");
 });
 
-test("a second touch while the microphone is starting does not start a second recognizer", async () => {
-  let starts = 0, aborts = 0;
-  class FakeSR { start() { starts++; } abort() { aborts++; if (this.onend) this.onend(); } stop() { if (this.onend) this.onend(); } }
-  const saved = { window: globalThis.window, localStorage: globalThis.localStorage };
-  /* browser globals voice.js touches, added only where Node lacks them */
-  const shims = { navigator: { language: "en-US" }, cancelAnimationFrame: () => {} };
-  const added = Object.keys(shims).filter((k) => !(k in globalThis));
-  for (const k of added) Object.defineProperty(globalThis, k, { value: shims[k], configurable: true });
-  globalThis.window = { SpeechRecognition: FakeSR };
-  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
-  try {
-    const { Voice } = await import("../web/js/voice.js?press=" + Date.now());
-    const v = new Voice({});
-    assert.equal(await v.listen(), true);
-    assert.equal(await v.listen(), true);
-    assert.equal(starts, 1, "only one recognizer is started while the first is still starting");
-    v.cancel();
-    assert.equal(aborts, 1, "cancelling while starting stops the pending recognizer");
-    assert.equal(await v.listen(), true);
-    assert.equal(starts, 2, "after a cancel, the next touch starts listening again");
-    v.cancel();
-  } finally {
-    globalThis.window = saved.window; globalThis.localStorage = saved.localStorage;
-    for (const k of added) delete globalThis[k];
-  }
+test("a second touch while the microphone is starting does not open a second microphone", async () => {
+  const { VoiceConversation, VSTATE } = await import("../web/js/conversation.js");
+  let opens = 0, release;
+  const gate = new Promise((ok) => { release = ok; });
+  const mic = { open: async () => { opens++; await gate; return { sampleRate: 16000 }; }, close() {}, setEnabled() {} };
+  const c = new VoiceConversation({ mic, transcriber: { kind: "batch" }, ask: async () => null, speaker: { stop() {}, level: () => 0 } });
+  const first = c.start();
+  assert.equal(await c.start(), true, "the second touch is absorbed");
+  release(); await first;
+  assert.equal(opens, 1, "only one microphone was opened");
+  assert.equal(c.state, VSTATE.LISTENING);
+  c.end("user");
+  await c.start(); assert.equal(opens, 2, "after ending, the next touch starts again");
+  c.end("user");
 });
 
 /* ------------------------------------------------ the Core feels alive --- */

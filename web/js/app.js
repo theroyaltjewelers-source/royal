@@ -7,7 +7,11 @@
      RoyalState  what ROYAL is doing, with legal transitions only
      RoyalCore   how that looks (web/js/core.js)
      Stage       where answers appear (web/js/stage.js)
-     Voice       speech in and out, with barge-in (web/js/voice.js)
+     Voice       ROYAL's spoken voice, output only (web/js/voice.js)
+     VoiceConversation  the voice engine: one state machine for listening,
+                 turns, thinking, speaking and barge-in (web/js/conversation.js,
+                 web/js/turn.js, web/js/capture.js).  It alone decides whether
+                 ROYAL is listening; the page draws what it says.
      Sound       quiet cues and haptics (web/js/sound.js)
 
    The page holds no business state.  Everything shown comes from the ROYAL
@@ -21,7 +25,8 @@ import { Sound } from "./sound.js";
 import { validateSpec } from "./schema.js";
 import { esc } from "./primitives.js";
 import { BotsPanel } from "./bots.js";
-import { RealtimeVoice } from "./realtime.js";
+import { VoiceConversation, VSTATE } from "./conversation.js";
+import { Microphone, ServerTranscriber, DeviceTranscriber, Speaker } from "./capture.js";
 import { providerNotice, providerProblem, serverProblem } from "./notices.js";
 
 const CFG = window.ROYAL_CONFIG || {};
@@ -61,15 +66,74 @@ state.on((next) => {
 });
 
 const voice = new Voice({
-  onPartial: (t) => { stage.setHeard(t); bump(); },
-  onFinal: (t) => submit(t, "voice"),
-  onState: (s) => { if (s === "listening") { state.go("LISTENING"); sound.play("listen"); } else if (state.state === "LISTENING") { state.go("AWAKE"); settle(); } },
-  onLevel: (a) => core.setAmplitude(a),
-  onError: (code, msg) => { if (msg) { stage.setCaption(msg, { quiet: true }); openType(); } },
+  onLevel: (a) => { core.setAmplitude(a); speaker.setLevel(a); },
   onSpeechBoundary: () => core.pulse(0.55),
   onSpeaking: (on) => { core.setSpeaking(on); document.body.dataset.speaking = on ? "1" : "0"; },
   audio: () => sound.ac,   /* the context the first touch unlocked, so iPhone plays ROYAL's voice */
 });
+
+/* ------------------------------------------------- the voice engine --- */
+/* Activate once: ROYAL listens, decides when Tahir has finished, answers
+   through the same /v1/command as typing, speaks, and listens again, with no
+   touch.  Talking over her stops her.  The page only draws the engine's
+   state (VOICE_LOOK) and offers its controls (mute, stop, end, continuous). */
+const speaker = new Speaker(voice);
+const mic = new Microphone({ audio: () => sound.ac });
+const device = new DeviceTranscriber();
+const VOICE_LOOK = { CONNECTING: "AWAKE", LISTENING: "LISTENING", USER_SPEAKING: "LISTENING", END_OF_TURN: "UNDERSTANDING", PROCESSING: "THINKING",
+  ROYAL_SPEAKING: "RESPONDING", INTERRUPTED: "LISTENING", MUTED: "AWAKE", RECONNECTING: "AWAKE", ERROR_RECOVERY: "WARNING", SESSION_ENDED: "AWAKE" };
+const VOICE_WORD = { CONNECTING: "Opening the microphone", LISTENING: "Listening", USER_SPEAKING: "Hearing you", END_OF_TURN: "Understanding", PROCESSING: "Thinking",
+  ROYAL_SPEAKING: "Speaking", INTERRUPTED: "Listening", MUTED: "Microphone muted", RECONNECTING: "Reconnecting the microphone", ERROR_RECOVERY: "Recovering", SESSION_ENDED: "" };
+const convo = new VoiceConversation({
+  mic, speaker, transcriber: device, continuous: store.get("royal.continuous") !== "0",
+  ask: async (text) => {
+    const res = await submit(text, "voice");
+    if (!res) return { ok: false, say: "" };
+    return { ok: res.status !== "FAILED", say: (res.presentation && res.presentation.speech) || res.summary || "", run_id: res.run_id, pending: res.pending };
+  },
+  onState: (s, prev) => {
+    document.body.dataset.voice = s.toLowerCase();
+    $("voicebar").hidden = !convo.active;
+    $("vbState").textContent = VOICE_WORD[s] || "";
+    $("vbMute").setAttribute("aria-pressed", s === VSTATE.MUTED ? "true" : "false");
+    $("vbMute").textContent = s === VSTATE.MUTED ? "Unmute" : "Mute";
+    $("vbStop").disabled = s !== VSTATE.ROYAL_SPEAKING;
+    if (s === VSTATE.LISTENING && prev !== VSTATE.INTERRUPTED && prev !== VSTATE.USER_SPEAKING && prev !== VSTATE.END_OF_TURN) sound.play("listen");
+    const look = VOICE_LOOK[s];
+    if (look && state.state !== look) state.go(look, "voice " + s);
+    if (s === VSTATE.SESSION_ENDED) settle(); else bump();
+  },
+  onHeard: (t, final) => { stage.setHeard(t); bump(); },
+  onNotice: (msg, why) => { stage.setCaption(msg, { quiet: true }); if (why === "mic") openType(); },
+});
+function paintContinuous() { $("vbCont").setAttribute("aria-pressed", convo.continuous ? "true" : "false"); $("vbCont").textContent = convo.continuous ? "Continuous: on" : "Continuous: off"; }
+paintContinuous();
+$("vbMute").addEventListener("click", () => convo.mute(convo.state !== VSTATE.MUTED));
+$("vbStop").addEventListener("click", () => convo.stopSpeaking());
+$("vbEnd").addEventListener("click", () => { convo.end("user"); stage.setCaption("Voice off. Touch me to talk again.", { quiet: true }); });
+$("vbCont").addEventListener("click", () => { convo.setContinuous(!convo.continuous); store.set("royal.continuous", convo.continuous ? "1" : "0"); paintContinuous(); });
+
+/* Transcription for this session: the server (Business, when it can), with
+   the device's own recognizer as the fallback; the device alone in Personal. */
+function pickTranscriber() {
+  const server = REALM === "BUSINESS" && INTEL && INTEL.voice_transcription === "AVAILABLE"
+    ? new ServerTranscriber({ realm: () => REALM, api: async (wav, realm) => {
+        try {
+          const r = await fetch((CFG.API || "") + "/v1/voice/transcribe?realm=" + realm, { method: "POST", headers: { "Content-Type": "audio/wav", Authorization: "Bearer " + TOKEN }, body: wav });
+          const j = await r.json().catch(() => ({}));
+          return { ...j, status: r.status };
+        } catch (_) { return { ok: false, error: "NETWORK" }; }
+      } }) : null;
+  convo.transcriber = server || device; convo.fallbackTranscriber = server && device.available ? device : null;
+  convo.diag.transcriber = convo.transcriber.kind === "batch" ? "server (xAI speech-to-text)" : "device recognizer";
+  return !!server || device.available;
+}
+
+/* Development diagnostics: ?voicedebug=1, or localStorage royal.voicedebug=1. */
+if (/[?&]voicedebug=1/.test(location.search) || store.get("royal.voicedebug") === "1") {
+  const box = $("vdebug"); box.hidden = false;
+  setInterval(() => { box.textContent = JSON.stringify({ ...convo.diag, latency_p50_ms: convo.latencySummary(), latency: undefined, last_turn: convo.diag.latency[convo.diag.latency.length - 1] || null, history: convo.history.slice(-6).map((h) => h.from + ">" + h.to + (h.why ? " (" + h.why + ")" : "")) }, null, 1); }, 250);
+}
 
 /* --------------------------------------------------------- session --- */
 let TOKEN = null, STATUS = null, SAID_CALC = false;
@@ -154,33 +218,18 @@ $("noticeClose").addEventListener("click", () => { noticeDismissed = noticeKind;
 async function refreshBrain() { const st = await api("GET", "/v1/status"); if (st.ok) checkBrain(st.provider); }
 
 /* What the intelligence layer can do on this server right now. */
-let INTEL = null, rt = null;
-async function loadIntelligence() {
+let INTEL = null, intelReady = null;
+function loadIntelligence() { intelReady = loadIntelligenceNow(); return intelReady; }
+async function loadIntelligenceNow() {
   const r = await api("GET", "/v1/intelligence/status");
   INTEL = r.ok ? r : null;
   /* ROYAL's one voice, from the server, on every device (Business only). */
   voice.useServer(INTEL && INTEL.spoken_voice === "AVAILABLE" ? { ready: () => REALM === "BUSINESS", fetch: speechFor } : null);
-  if (INTEL && INTEL.realtime_voice === "AVAILABLE" && !rt) {
-    rt = new RealtimeVoice({ api, ask: askFromVoice, realm: () => REALM,
-      onState: (s) => {
-        document.body.dataset.rt = s;
-        if (s === "live" || s === "listening") { if (state.state !== "LISTENING" && !busy) state.go("LISTENING"); }
-        else if (s === "speaking") { if (state.state !== "RESPONDING") state.go("RESPONDING"); }
-        else if (s === "disconnected") { stage.setCaption("The voice connection closed. Your conversation is kept; touch to reconnect, or type.", { quiet: true }); state.go("AWAKE"); settle(); }
-      },
-      onHeard: (t, final) => { stage.setHeard(t); bump(); },
-      onSaid: (t) => stage.setCaption(t),
-      onLevel: (a) => { core.setAmplitude(a); core.pulse(a * 0.6); },
-      onError: (m) => { stage.setCaption(m, { quiet: true }); } });
-  }
 }
 async function speechFor(text, signal) {
   const r = await fetch((CFG.API || "") + "/v1/voice/speak?realm=" + REALM, { method: "POST", signal,
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN }, body: JSON.stringify({ text: text.slice(0, 1200) }) });
   return r.ok ? r.arrayBuffer() : null;
-}
-async function askFromVoice(text) {
-  return submit(text, "voice", { speak: false });
 }
 
 function offline() {
@@ -230,41 +279,36 @@ async function wake(e) {
   }
   sound.unlock();
   if (!TOKEN) return;
-  /* Realtime voice, when the server offers it: one touch starts a live
-     conversation, the next ends it.  Speaking over ROYAL interrupts it. */
-  if (rt && !voice.muted) {
-    /* While a connection is being made, another touch must not open a second
-       one (two microphones, two sockets).  It is ignored until this settles. */
-    if (rtStarting || (rt.ws && !rt.active)) return;
-    if (rt.active) { rt.stop(); state.go("AWAKE"); stage.setCaption("Voice off. Touch to talk again.", { quiet: true }); settle(); return; }
-    if (state.state === "AMBIENT" || state.state === "OFFLINE") state.go("AWAKE", "touch");
-    sound.play("wake"); stage.setHeard(""); stage.setCaption("Listening.", { quiet: true });
-    rtStarting = true;
-    let started = false;
-    try { started = await rt.start(); } finally { rtStarting = false; }
-    if (started) { bump(); return; }
-    /* fall through to the browser's own speech if realtime could not start */
+  /* The voice engine.  The first touch starts a voice conversation that
+     stays open: ROYAL listens, answers and listens again with no further
+     touch.  While it runs, a touch on the Core stops her speaking (the same
+     as talking over her); the controls mute, stop, or end it. */
+  if (convo.active) {
+    if (convo.state === VSTATE.ROYAL_SPEAKING) convo.stopSpeaking();
+    else if (convo.state === VSTATE.MUTED) convo.mute(false);
+    bump(); return;
   }
-  if (voice.speaking) { voice.stopSpeaking(); settle(); return; }           /* barge-in */
-  if (state.state === "LISTENING") { voice.cancel(); state.go("AWAKE"); settle(); return; }
-  if (busy) return;
-  if (state.state === "AMBIENT" || state.state === "OFFLINE") {
-    state.go("AWAKE", "touch"); sound.play("wake");
-    const g = greeting(); stage.setHeard(""); stage.setCaption(g);
-    /* Say hello (unless muted), then listen; without speech input, offer typing. */
-    if (voice.canListen) voice.speak(g.split(".")[0] + ".", { onEnd: () => listenNow() });
-    else { voice.speak(g.split(".")[0] + "."); openType(); }
-  } else if (voice.canListen) listenNow();
-  else openType();
+  if (voice.speaking) { voice.stopSpeaking(); settle(); return; }           /* stop a typed answer being read */
+  if (state.state === "AMBIENT" || state.state === "OFFLINE") { state.go("AWAKE", "touch"); sound.play("wake"); }
+  /* What the server can do decides how this session transcribes: a touch
+     made before that is known waits for it (briefly), rather than settle
+     for the device's recognizer for the whole session. */
+  if (!INTEL) await Promise.race([intelReady || loadIntelligence(), new Promise((r) => setTimeout(r, 3000))]);
+  if (!pickTranscriber()) {
+    stage.setCaption("Voice input isn't available in this browser. You can type instead.", { quiet: true });
+    openType(); bump(); return;
+  }
+  const g = greeting(); stage.setHeard(""); stage.setCaption(g);
+  const ok = await convo.start();
+  if (ok) convo.announce(g.split(".")[0] + ".");
   bump();
 }
-async function listenNow() { if (state.state === "AWAKE" || state.state === "COMPLETE" || state.state === "WARNING" || state.state === "WAITING_FOR_APPROVAL") await voice.listen(); }
 
 /* Press feedback.  The light answers the moment a finger or mouse button
    lands (pointerdown), instead of waiting for it to lift.  What the press
    does still runs on click, so the keyboard, screen readers and the
    browser's rules for starting sound and the microphone are unchanged. */
-let rtStarting = false, lastPointer = "mouse";
+let lastPointer = "mouse";
 function pressStart(e) {
   lastPointer = e.pointerType || "mouse";
   if (!e.isPrimary || e.button > 0) return;
@@ -308,12 +352,12 @@ function leave(el) { if (el.hidden || el._leaving) return; if (reduced) { el.hid
 function unleave(el) { if (el._leaving) { clearTimeout(el._leaving); el._leaving = null; el.classList.remove("leaving"); } }
 $("kbdBtn").addEventListener("click", () => ($("typebar").hidden || $("typebar")._leaving ? openType() : closeType()));
 $("typebar").addEventListener("submit", (e) => { e.preventDefault(); const t = $("say").value.trim(); if (!t) return; $("say").value = ""; submit(t, "text"); });
-$("say").addEventListener("input", () => { if (voice.speaking) voice.stopSpeaking(); bump(); });
+$("say").addEventListener("input", () => { if (convo.state === VSTATE.ROYAL_SPEAKING) convo.stopSpeaking(); else if (voice.speaking) voice.stopSpeaking(); bump(); });
 document.addEventListener("keydown", (e) => {
   if (!TOKEN || !$("signin").hidden || !$("boot").hidden) return;
   if (bots.isOpen) { if (e.key === "Escape") bots.close(); return; }
   const inField = /INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName);
-  if (e.key === "Escape") { if (!$("sheet").hidden) return closeSheet(); if (voice.speaking) return voice.stopSpeaking(); if (state.state === "LISTENING") { voice.cancel(); return; } if (!$("typebar").hidden) return closeType(); return; }
+  if (e.key === "Escape") { if (!$("sheet").hidden) return closeSheet(); if (convo.state === VSTATE.ROYAL_SPEAKING) return convo.stopSpeaking(); if (voice.speaking) return voice.stopSpeaking(); if (convo.active) { convo.end("user"); return; } if (!$("typebar").hidden) return closeType(); return; }
   if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "/" || (e.key.length === 1 && /\S/.test(e.key))) { openType(); if (e.key !== "/") { $("say").value = e.key; } e.preventDefault(); }
 });
@@ -324,52 +368,63 @@ document.addEventListener("keydown", (e) => {
    that, what needs me?" vanished.  Each question is a numbered turn; the
    server answers every one, and only the newest is drawn on the stage.  An
    older answer that arrives late is still recorded by ROYAL (and returned to
-   the realtime voice when it asked), but never overwrites the newer one. */
+   the voice engine when it asked), but never overwrites the newer one. */
 let busy = 0, turn = 0;
 async function submit(text, modality, { speak = true } = {}) {
   const my = ++turn; busy++;
-  voice.stopSpeaking(); voice.cancel(); sound.unlock();
+  /* In a voice conversation the engine owns the state and the speaking;
+     this only asks ROYAL and draws the answer. */
+  const engine = convo.active;
+  const look = (s, why) => { if (!engine) state.go(s, why); };
+  if (!engine) voice.stopSpeaking();
+  sound.unlock();
   stage.setHeard(text); bump();
-  if (!STATES[state.state] || state.state === "OFFLINE") state.go("AWAKE");
-  state.go("UNDERSTANDING", text);
+  if (!engine && (!STATES[state.state] || state.state === "OFFLINE")) state.go("AWAKE");
+  look("UNDERSTANDING", text);
   const req = api("POST", "/v1/command", { content: text, modality, realm: REALM, conversation_id: CONVO });
-  await wait(260);
-  state.go("THINKING");
+  if (!engine) await wait(260);
+  look("THINKING");
   const r = await req;
   busy = Math.max(0, busy - 1);
   if (my !== turn) return r.ok ? r.result : null;   /* superseded on screen by a newer question */
   if (!r.ok) {
-    if (r.unauthorized) { store.set("royal.session", null); TOKEN = null; state.go("OFFLINE"); return showSignIn("Your session ended. Sign in again."); }
-    state.go("FAILURE", "request failed"); sound.play("failure");
-    const spec = { version: 1, mode: "error", realm: REALM, tone: "attention", speech: r.message || "That didn't go through.", focus_entity: null, agents: [],
+    if (r.unauthorized) { store.set("royal.session", null); TOKEN = null; convo.end("auth"); state.go("OFFLINE"); return showSignIn("Your session ended. Sign in again."); }
+    look("FAILURE", "request failed"); sound.play("failure");
+    const spec = { version: 1, mode: "error", realm: REALM, tone: "attention", speech: r.network ? "I couldn't reach my server. Nothing was done." : (r.message || "That didn't go through."), focus_entity: null, agents: [],
       surfaces: [{ type: "ERROR_OBJECT", data: { attempted: "Ask ROYAL: " + text.slice(0, 200), failed_because: r.network ? "I couldn't reach my server." : (r.message || "The request failed."), impact: "Nothing was done.", next_action: "Try again in a moment." } }] };
     stage.show(validateSpec(spec).spec); stage.setCaption(spec.speech, { tone: "attention" });
     if (r.network) $("retry").hidden = false;
+    if (engine) return { status: "FAILED", summary: spec.speech, presentation: spec };
     return settle();
   }
   const res = r.result;
   const v = validateSpec(res.presentation || {});
   const spec = v.ok ? v.spec : null;
   if (res.status === "FAILED" && /AI brain|PROVIDER_/.test(String(res.summary || ""))) refreshBrain();
-  if (!spec) { state.go("FAILURE"); stage.setCaption((res.summary || "") + " (The picture for this answer failed its safety check, so only the words are shown.)", { tone: "attention" }); return settle(); }
+  if (!spec) { look("FAILURE"); stage.setCaption((res.summary || "") + " (The picture for this answer failed its safety check, so only the words are shown.)", { tone: "attention" }); if (engine) return res; return settle(); }
 
   /* Specialists that took part: shown only because they did. */
   if (spec.agents.length) {
-    state.go("DELEGATING"); sound.play("delegate");
+    look("DELEGATING"); sound.play("delegate");
     stage.showAgents(spec.agents, { hold: 3200 });
-    await wait(620 + 90 * spec.agents.length);
-    sound.play("returned");
+    if (!engine) { await wait(620 + 90 * spec.agents.length); sound.play("returned"); }
   }
-  state.go("RESPONDING");
+  look("RESPONDING");
   stage.show(spec);
   stage.setCaption(spec.speech || res.summary || "", { tone: spec.tone });
   if (res.skill === "clear") stage.setHeard("");
-  const done = () => finish(spec, res);
-  /* With realtime voice on, the voice says it; the browser stays quiet. */
-  if (!speak || (rt && rt.active) || !voice.speak(spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
   /* A specialist's Grok Bot is still working on part of this: its answer
      comes back to this conversation, and I show it when it arrives. */
   if (res.pending && res.pending.length) listenForReplies();
+  if (engine) {
+    /* Spoken by the engine: the voice turn's own answer is returned to it;
+       a typed question during a voice session is said when ROYAL is listening. */
+    if (modality !== "voice" && speak) convo.announce(spec.speech || res.summary);
+    refreshDecisionMark();
+    return res;
+  }
+  const done = () => finish(spec, res);
+  if (!speak || !voice.speak(spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
   return res;
 }
 
@@ -396,6 +451,16 @@ async function pollReplies() {
 }
 function showReplies() {
   if (!replyQueue.length) return;
+  /* In a voice conversation the engine decides when it may speak: only
+     while ROYAL is listening and Tahir is not talking. */
+  if (convo.active) {
+    if (busy || convo.state !== VSTATE.LISTENING) { setTimeout(showReplies, 800); return; }
+    const it = replyQueue.shift(), res = it.result || {}, v = validateSpec(res.presentation || {});
+    turn++; sound.play("returned");
+    if (v.ok) { stage.show(v.spec); stage.setCaption(v.spec.speech || res.summary || "", { tone: v.spec.tone }); } else stage.setCaption(String(res.summary || ""), { tone: "attention" });
+    convo.announce((v.ok && v.spec.speech) || res.summary);
+    return setTimeout(showReplies, 400);
+  }
   if (busy || voice.speaking || ["LISTENING", "UNDERSTANDING", "THINKING", "RESPONDING"].indexOf(state.state) >= 0) { setTimeout(showReplies, 1500); return; }
   const it = replyQueue.shift();
   const res = it.result || {};
@@ -406,7 +471,7 @@ function showReplies() {
   stage.show(v.spec);
   stage.setCaption(v.spec.speech || res.summary || "", { tone: v.spec.tone });
   const done = () => { finish(v.spec, res); setTimeout(showReplies, 400); };
-  if ((rt && rt.active) || !voice.speak(v.spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
+  if (!voice.speak(v.spec.speech, { onEnd: done })) setTimeout(done, reduced ? 0 : 500);
 }
 
 function finish(spec, res) {
@@ -526,7 +591,8 @@ async function showSheet(view) {
       '<p class="sb-h">Preferences</p><ul class="sb-list">' +
         '<li><label class="tg"><span>Spoken replies</span><input type="checkbox" data-pref="voice"' + (voice.muted ? "" : " checked") + (voice.canSpeak ? "" : " disabled") + "></label></li>" +
         '<li><label class="tg"><span>Sounds</span><input type="checkbox" data-pref="sound"' + (sound.enabled ? " checked" : "") + "></label></li>" +
-        (voice.canListen ? "" : '<li class="sb-note">Voice input isn\'t available in this browser. Typing works everywhere.</li>') +
+        ('<li><label class="tg"><span>Continuous conversation</span><input type="checkbox" data-pref="continuous"' + (convo.continuous ? " checked" : "") + "></label></li>") +
+        (navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? "" : '<li class="sb-note">Voice input isn\'t available in this browser. Typing works everywhere.</li>') +
       "</ul>" +
       '<ul class="sb-list"><li><button type="button" id="signOut" class="danger">Sign out</button></li></ul>';
     const r = await api("GET", "/v1/decisions?status=OPEN&realm=" + REALM);
@@ -567,8 +633,10 @@ function intelLines() {
   const i = INTEL; if (!i) return "";
   /* Measured on this device: the median time from the question to the
      first sound, and how many gaps the voice has had. */
+  /* The voice engine's measured stages, median of the last turns. */
+  const voiceTurns = () => { const l = convo.latencySummary(); return l.speech_end_to_audio == null ? "" : " · you stop to my voice " + l.speech_end_to_audio + " ms (median)"; };
   const voiceLine = () => {
-    const st = (rt && rt.pb && rt.pb.stats && rt.pb.stats.replies ? rt.pb.stats : null) || voice.stats;
+    const st = voice.stats;
     if (!st || !st.replies) return "";
     const f = st.first_audio_ms.slice().sort((a, b) => a - b), med = f.length ? f[Math.floor(f.length / 2)] : null;
     return (med !== null ? " · first sound " + med + " ms" : "") + " · " + st.underruns + (st.underruns === 1 ? " gap" : " gaps");
@@ -581,7 +649,7 @@ function intelLines() {
     row("CONTACT DISCOVERY", word(i.contacts.discovery), i.contacts.discovery === "CONNECTED") +
     row("EMAIL VERIFICATION", word(i.contacts.verification), i.contacts.verification === "CONNECTED") +
     row("EMAIL SENDING", word(i.email.status) + " · " + word(i.sending), i.email.status === "CONNECTED" && i.sending === "ENABLED") +
-    row("REALTIME VOICE", word(i.realtime_voice), i.realtime_voice === "AVAILABLE") +
+    row("VOICE INPUT", i.voice_transcription === "AVAILABLE" ? "SERVER TRANSCRIPTION" + voiceTurns() : device.available ? "DEVICE RECOGNIZER" + voiceTurns() : "NOT AVAILABLE", i.voice_transcription === "AVAILABLE" || device.available) +
     row("ROYAL'S VOICE", word(i.spoken_voice || "DISABLED") + voiceLine(), i.spoken_voice === "AVAILABLE") +
     row("GROK BOT AGENTS", word(i.agent_orchestration), i.agent_orchestration === "ENABLED") + "</ul>";
 }
@@ -606,6 +674,7 @@ $("sheetBody").addEventListener("click", async (e) => {
 $("sheetBody").addEventListener("change", (e) => {
   const p = e.target.dataset.pref;
   if (p === "voice") { voice.setMuted(!e.target.checked); paintMute(); }
+  if (p === "continuous") { convo.setContinuous(e.target.checked); store.set("royal.continuous", e.target.checked ? "1" : "0"); paintContinuous(); }
   if (p === "sound") sound.setEnabled(e.target.checked);
 });
 
@@ -617,7 +686,7 @@ function switchRealm(r) {
   stage.history = []; stage.clear(); stage.setHeard("");
   bots.reset();
   /* A live voice conversation belongs to the room it started in. */
-  if (rt && rt.active) rt.stop();
+  convo.end("realm switch");
   applyRealm();
   stage.setCaption(r === "PERSONAL" ? "Personal. Nothing from the business comes in here." : "Business.", { quiet: true });
   refreshDecisionMark();

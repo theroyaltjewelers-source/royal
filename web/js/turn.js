@@ -81,7 +81,7 @@ export class SpeechDetector {
     if (this.userLevel !== null && level < this.userLevel - 15) prob *= 0.4;   /* far quieter than Tahir */
     /* Hangover: the dips between syllables stay inside the speech. */
     this.since = prob >= 0.5 ? 0 : this.since + 1;
-    const speech = prob >= 0.5 || (prob >= 0.2 && this.since <= 10 && !steady);
+    const speech = prob >= 0.5 || (prob >= 0.2 && this.since <= 8 && !steady);
     if (prob >= 0.5) this.userLevel = this.userLevel === null ? level : this.userLevel + (level - this.userLevel) * 0.05;
     this.last = { prob, speech, db: level, snr, zcrps, mod, floor: this.floor, threshold: thr };
     return this.last;
@@ -111,10 +111,10 @@ export class TurnDetector {
 
   /* The pause that may end this turn, adapted to the speaker. */
   silenceMs() {
-    const base = this.speechMs < 900 ? 450 : 700;
+    const base = this.speechMs < 900 ? 380 : 550;
     if (this.pauses.length < 2) return base;
     const p = this.pauses.slice().sort((a, b) => a - b), med = p[Math.floor(p.length / 2)];
-    return clamp(Math.max(base, med * 1.6), 450, 1200);
+    return clamp(Math.max(base, med * 1.6), 380, 1100);
   }
 
   /* The transcript said how finished it sounds: how long to wait now. */

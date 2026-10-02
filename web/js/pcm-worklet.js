@@ -1,6 +1,7 @@
-/* Microphone capture for realtime voice: hands 20 ms mono frames of the raw
-   signal to the page, which converts them to 24 kHz PCM16.  Runs in the
-   audio thread; holds nothing. */
+/* Microphone capture for ROYAL's voice engine: hands 20 ms mono frames of
+   the (echo-cancelled, noise-suppressed) signal to the page, where the turn
+   detector reads them (web/js/turn.js).  Runs in the audio thread; holds
+   nothing. */
 class RoyalPcm extends AudioWorkletProcessor {
   constructor() { super(); this.buf = []; this.size = 0; this.frame = Math.round(sampleRate / 50); }
   process(inputs) {

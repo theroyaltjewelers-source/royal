@@ -494,3 +494,32 @@ body[data-notice="1"][data-wide="1"][data-layout="content"] .column { padding-to
   body[data-state="THINKING"] .mode i, body[data-state="UNDERSTANDING"] .mode i { transform: scaleY(.7); }
 }
 @media (prefers-contrast: more) { .hud { opacity: .5; } .caption { text-shadow: none; } }
+
+/* ------------------------------------------------- voice conversation --- */
+/* The engine's controls: a quiet row above the bottom marks, present only
+   while a voice conversation runs.  The state word is the engine's own. */
+.voicebar { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 74px); transform: translateX(-50%); z-index: 30;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 32px);
+  padding: 6px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--glass); backdrop-filter: blur(10px); }
+.voicebar[hidden] { display: none; }
+.vb-state { font: 500 11px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--lime); padding: 0 6px; min-width: 7em; text-align: center; }
+.vb-btn { font: 400 12px/1 var(--sans); color: var(--ink-2); background: transparent; border: 1px solid var(--line-2); border-radius: 999px; padding: 7px 11px; cursor: pointer; }
+.vb-btn:disabled { opacity: .35; cursor: default; }
+.vb-btn[aria-pressed="true"] { border-color: var(--lime); color: var(--lime); }
+.vb-end { border-color: var(--red); color: var(--ink); }
+body[data-voice="user_speaking"] .vb-state, body[data-voice="interrupted"] .vb-state { color: var(--ink); }
+body[data-voice="muted"] .vb-state, body[data-voice="reconnecting"] .vb-state, body[data-voice="error_recovery"] .vb-state { color: var(--amber); }
+body[data-notice="1"] .voicebar { bottom: calc(var(--safe-b) + 196px); }
+@media (max-width: 520px) {
+  .voicebar { bottom: calc(var(--safe-b) + 62px); gap: 4px; flex-wrap: nowrap; padding: 5px 6px; border-radius: 16px; }
+  .vb-btn { padding: 7px 9px; font-size: 11px; white-space: nowrap; }
+  .vb-state { min-width: 0; padding: 0 4px; font-size: 10px; letter-spacing: .1em; white-space: nowrap; }
+  #vbCont { display: none; }   /* on a phone it lives in the menu's preferences */
+  body[data-notice="1"] .voicebar { bottom: calc(var(--safe-b) + 214px); }
+}
+.vdebug { position: fixed; top: 56px; right: 8px; z-index: 40; max-width: min(420px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; margin: 0;
+  font: 10px/1.35 var(--mono); color: var(--ink-2); background: var(--glass-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px; }
+.vdebug[hidden] { display: none; }
+/* Diagnostics never take a touch meant for ROYAL. */
+.vdebug { pointer-events: none; opacity: .9; }
+@media (max-width: 520px) { .vdebug { top: 44px; left: 8px; right: 8px; max-width: none; max-height: 30vh; font-size: 9px; } }

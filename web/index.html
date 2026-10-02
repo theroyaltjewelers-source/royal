@@ -61,6 +61,20 @@
 <!-- Specialists that took part in the current answer. -->
 <div id="agents" class="agents" hidden aria-label="Specialists consulted"></div>
 
+<!-- The voice conversation's controls, shown only while one is running:
+     what the engine is doing, mute, stop ROYAL speaking, end, and whether
+     she listens again after each answer. -->
+<div id="voicebar" class="voicebar" hidden role="group" aria-label="Voice conversation">
+  <span id="vbState" class="vb-state" aria-live="polite"></span>
+  <button type="button" id="vbMute" class="vb-btn" aria-pressed="false">Mute</button>
+  <button type="button" id="vbStop" class="vb-btn" disabled>Stop speaking</button>
+  <button type="button" id="vbCont" class="vb-btn" aria-pressed="true">Continuous: on</button>
+  <button type="button" id="vbEnd" class="vb-btn vb-end">End voice</button>
+</div>
+
+<!-- Voice engine diagnostics, for development only (?voicedebug=1). -->
+<pre id="vdebug" class="vdebug" hidden></pre>
+
 <!-- Typing: another way to say the same thing. -->
 <form id="typebar" class="typebar" hidden autocomplete="off">
   <label for="say" class="sr">Say something to ROYAL</label>

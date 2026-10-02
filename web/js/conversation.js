@@ -90,7 +90,7 @@ export class VoiceConversation {
     if (this.state !== st) return;
     this._err("watchdog: " + st + " took too long");
     if (st === S.END_OF_TURN) return this._finalize("watchdog");
-    if (st === S.ROYAL_SPEAKING) { try { this.speaker.stop(); } catch (_) {} this.diag.tts = "stopped (watchdog)"; return this._relisten("watchdog"); }
+    if (st === S.ROYAL_SPEAKING) { this.diag.tts = "stopped (watchdog)"; this._relisten("watchdog"); try { this.speaker.stop(); } catch (_) {} return; }
     if (st === S.INTERRUPTED) return this.go(S.LISTENING, "watchdog");
     if (st === S.PROCESSING) { this.turnSeq++; return this._say("That's taking too long. I'll put the answer on your screen when it comes.", "timeout"); }
     if (st === S.CONNECTING || st === S.RECONNECTING) return this.end("mic", "I couldn't open the microphone. Touch me to try again, or type.");
@@ -121,8 +121,9 @@ export class VoiceConversation {
   _micLost(why) {
     if (!this.active || this.state === S.RECONNECTING) return;
     this.diag.mic = "lost: " + why; this._err("microphone lost: " + why);
-    if (this.state === S.ROYAL_SPEAKING) { try { this.speaker.stop(); } catch (_) {} }
+    const wasSpeaking = this.state === S.ROYAL_SPEAKING;
     this.go(S.RECONNECTING, why);
+    if (wasSpeaking) { try { this.speaker.stop(); } catch (_) {} }
     const tries = ++this.reconnects;
     if (tries > 3) return this.end("mic", "The microphone keeps dropping. Touch me to start again, or type.");
     try { this.mic.close(); } catch (_) {}
@@ -132,17 +133,18 @@ export class VoiceConversation {
     const was = this.state;
     if (this.watch) { this.clearTimer(this.watch); this.watch = null; }
     if (this.idleT) { this.clearTimer(this.idleT); this.idleT = null; }
-    try { this.speaker.stop(); } catch (_) {}
-    try { this.mic.close(); } catch (_) {}
-    if (this.transcriber && this.transcriber.abort) try { this.transcriber.abort(); } catch (_) {}
     this.turnSeq++; this.utterance = []; this.queue = [];
-    this.diag.mic = "closed"; this.diag.tts = "idle";
-    /* Ending is always allowed, from any state. */
+    /* Ending is always allowed, from any state, and happens first, so
+       nothing the speaker or microphone reports while closing moves it. */
     if (was !== S.SESSION_ENDED && was !== S.IDLE) {
       this.state = S.SESSION_ENDED; this.diag.state = S.SESSION_ENDED;
       this.history.push({ at: this.now(), from: was, to: S.SESSION_ENDED, why: reason });
-      try { this.onState && this.onState(S.SESSION_ENDED, was, reason); } catch (_) {}
     }
+    try { this.speaker.stop(); } catch (_) {}
+    try { this.mic.close(); } catch (_) {}
+    if (this.transcriber && this.transcriber.abort) try { this.transcriber.abort(); } catch (_) {}
+    this.diag.mic = "closed"; this.diag.tts = "idle";
+    if (was !== S.SESSION_ENDED && was !== S.IDLE) try { this.onState && this.onState(S.SESSION_ENDED, was, reason); } catch (_) {}
     if (notice && this.onNotice) this.onNotice(notice, reason);
   }
   mute(on) {
@@ -153,7 +155,13 @@ export class VoiceConversation {
     if (!on && this.state === S.MUTED) { this.turn.reset(); return this.go(S.LISTENING, "unmuted"); }
     return false;
   }
-  stopSpeaking() { if (this.state !== S.ROYAL_SPEAKING) return false; try { this.speaker.stop(); } catch (_) {} this.diag.tts = "stopped by Tahir"; return this._relisten("stopped"); }
+  stopSpeaking() {
+    if (this.state !== S.ROYAL_SPEAKING) return false;
+    this.diag.tts = "stopped by Tahir";
+    this._relisten("stopped");
+    try { this.speaker.stop(); } catch (_) {}
+    return true;
+  }
   async restart() { this.end("restart"); return this.start(); }
   setContinuous(on) { this.continuous = !!on; }
 
@@ -180,10 +188,12 @@ export class VoiceConversation {
         if (this.state === S.PROCESSING) { this.turnSeq++; this.diag.superseded = (this.diag.superseded || 0) + 1; }   /* a new turn replaces the one being answered */
         this._beginTurn(t, "speech");
       } else if (speaking) {
-        /* Barge-in: stop ROYAL at once, keep listening, keep the words from just before they began. */
-        try { this.speaker.stop(); } catch (_) {}
+        /* Barge-in: stop ROYAL at once, keep listening, keep the words from
+           just before they began.  The state moves first, so her playback's
+           own "finished" callback finds her no longer speaking. */
         this.diag.barge_ins++; this.diag.last_barge_in = t; this.diag.tts = "stopped by barge-in";
         this.go(S.INTERRUPTED, "barge-in");
+        try { this.speaker.stop(); } catch (_) {}
         this._beginTurn(t, "barge-in");
       }
       return;
@@ -196,6 +206,7 @@ export class VoiceConversation {
   }
 
   _beginTurn(t, why) {
+    this._logTurn(why === "barge-in");
     this.utterance = this.preroll.slice(); this.attempt++; this.spec = null;
     this.marks = { speech_start: t };
     if (this.transcriber.kind === "stream") this.transcriber.begin();
@@ -298,17 +309,22 @@ export class VoiceConversation {
     return from;
   }
 
+  /* One turn's measured stages, written once, whether ROYAL finished
+     speaking or was interrupted. */
+  _logTurn(interrupted = false) {
+    const m = this.marks;
+    if (!m || !m.speech_end || m.logged) return;
+    m.logged = true; m.relisten = this.now();
+    const d = (a, b) => (m[a] != null && m[b] != null ? m[b] - m[a] : null);
+    const row = { end_to_transcript: d("speech_end", "transcript"), transcript_to_response: d("request", "response"), response_to_audio: d("response", "first_audio"),
+      speech_end_to_audio: d("speech_end", "first_audio"), audio_to_listening: interrupted ? null : d("spoken", "relisten"), interrupted };
+    this.diag.latency.push(row); if (this.diag.latency.length > 20) this.diag.latency.shift();
+    if (this.onTurn) try { this.onTurn(row); } catch (_) {}
+  }
+
   _relisten(why) {
     if (this.state === S.SESSION_ENDED) return;
-    const m = this.marks;
-    if (m && m.speech_end && !m.logged) {
-      m.logged = true; m.relisten = this.now();
-      const d = (a, b) => (m[a] != null && m[b] != null ? m[b] - m[a] : null);
-      const row = { end_to_transcript: d("speech_end", "transcript"), transcript_to_response: d("request", "response"), response_to_audio: d("response", "first_audio"),
-        speech_end_to_audio: d("speech_end", "first_audio"), audio_to_listening: d("spoken", "relisten") };
-      this.diag.latency.push(row); if (this.diag.latency.length > 20) this.diag.latency.shift();
-      if (this.onTurn) try { this.onTurn(row); } catch (_) {}
-    }
+    this._logTurn(false);
     if (!this.continuous && why !== "nothing to say" && this.state === S.ROYAL_SPEAKING) return this.end("single turn");
     this.turn.reset();
     if (this.state === S.LISTENING) return;

@@ -41,10 +41,11 @@ function world({ texts = [], reply = (t) => "You said " + t + ".", askMs = 300, 
       log.said.push(text);
       if (!speakOk) return false;
       const n = text.split(/\s+/).length;
-      speaking = { start: sim.setTimer(() => onStart && onStart(), 250), end: neverEnds ? null : sim.setTimer(() => { speaking = null; onEnd && onEnd(); }, 250 + n * words) };
+      speaking = { onEnd, start: sim.setTimer(() => onStart && onStart(), 250), end: neverEnds ? null : sim.setTimer(() => { speaking = null; onEnd && onEnd(); }, 250 + n * words) };
       return true;
     },
-    stop: () => { if (speaking) { log.stops++; sim.clearTimer(speaking.start); if (speaking.end) sim.clearTimer(speaking.end); speaking = null; } },
+    /* Like the real voice: stopping calls the reply's own onEnd. */
+    stop: () => { if (speaking) { log.stops++; const s = speaking; speaking = null; sim.clearTimer(s.start); if (s.end) sim.clearTimer(s.end); s.onEnd && s.onEnd(); } },
     level: () => (speaking ? 0.6 : 0),
     get speaking() { return !!speaking; },
   };
@@ -173,6 +174,7 @@ test("barge-in: Tahir talks over ROYAL; she stops at once, his words are kept, a
   assert.equal(w.log.asked[1], "No, Royal, that's not what I meant.");
   assert.match(w.log.states.join(">"), /ROYAL_SPEAKING>INTERRUPTED>USER_SPEAKING/);
   assert.equal(w.conv.diag.barge_ins, 1);
+  assert.ok(!w.conv.diag.errors.some((e) => /refused/.test(e.e)), "no refused transitions: " + JSON.stringify(w.conv.diag.errors));
 });
 
 test("rapid interruptions, a long wait before answering, and a change of subject all stay in one session", async () => {
@@ -251,6 +253,7 @@ test("twenty turns in a row, hands free, with latency recorded for each", async 
     await w.quiet(500 + (i % 4) * 400);
   }
   assert.equal(w.log.asked.length, 20); assert.equal(w.log.opens, 1);
+  assert.ok(!w.conv.diag.errors.some((e) => /refused/.test(e.e)), "no refused transitions in twenty turns");
   assert.equal(w.conv.diag.latency.length, 20);
   const l = w.conv.latencySummary();
   for (const k of ["end_to_transcript", "transcript_to_response", "response_to_audio", "speech_end_to_audio", "audio_to_listening"]) assert.ok(l[k] != null, k);

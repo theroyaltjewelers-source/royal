@@ -256,3 +256,54 @@ test("playback queue: chunks play back to back behind a small buffer; a late chu
   assert.deepEqual(speechPieces("Two things. One is late. The other owes money."), ["Two things.", "One is late. The other owes money."]);
   assert.deepEqual(speechPieces(""), []);
 });
+
+/* -------------------------------------------------- server transcription --- */
+import { wavFrom } from "../web/js/turn.js";
+
+function sttApp({ flags = {}, apiKey = KEY, reply } = {}) {
+  const calls = [];
+  const fetchImpl = async (u, init) => { calls.push({ url: String(u), init }); return reply ? reply(u, init) : new Response(JSON.stringify({ text: " What needs me? ", words: [{}, {}, {}] }), { status: 200 }); };
+  const royal = createRoyal({ store: new MemoryStore(), flags, provider: new GrokProvider({ apiKey, model: "grok-test", fetchImpl }) });
+  const h = createHandler({ royal, auth: async (t) => USERS[t] || null, log: (l) => logs.push(l) });
+  const logs = [];
+  const send = (body, { realm = "BUSINESS", token = "t-owner" } = {}) => h(new Request("https://royal.test/v1/voice/transcribe?realm=" + realm, {
+    method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "audio/wav" }, body }));
+  return { royal, calls, send, logs };
+}
+const turnWav = () => wavFrom([new Float32Array(16000)], 16000);
+
+test("transcribe: one finished turn (a WAV) goes to xAI speech-to-text as multipart, and the words come back; nothing is logged", async () => {
+  const { send, calls, logs } = sttApp();
+  const r = await send(turnWav());
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.text, "What needs me?");
+  assert.equal(calls[0].url, "https://api.x.ai/v1/stt");
+  assert.equal(calls[0].init.headers.Authorization, "Bearer " + KEY);
+  assert.ok(calls[0].init.body instanceof FormData);
+  assert.equal(calls[0].init.body.get("language"), "en");
+  assert.equal(calls[0].init.body.get("file").type, "audio/wav");
+  assert.ok(!JSON.stringify(logs).includes("What needs me"), "the words are not in the access log");
+});
+
+test("transcribe: Business only, owner only, WAV only; no key, switched off and xAI refusals are said plainly, never with the key", async () => {
+  const { send, calls } = sttApp();
+  const p = await send(turnWav(), { realm: "PERSONAL" });
+  assert.equal(p.status, 409); assert.equal((await p.json()).error, "TRANSCRIPTION_BUSINESS_ONLY");
+  assert.equal((await send(turnWav(), { token: "t-staff" })).status, 403);
+  const notWav = await send(new Uint8Array(5000));
+  assert.equal(notWav.status, 400); assert.equal((await notWav.json()).error, "AUDIO_NOT_WAV");
+  assert.equal(calls.length, 0, "nothing refused reaches xAI");
+  assert.equal((await (await sttApp({ apiKey: null }).send(turnWav())).json()).error, "TRANSCRIPTION_NOT_CONFIGURED");
+  assert.equal((await (await sttApp({ flags: { voice_transcription: false } }).send(turnWav())).json()).error, "TRANSCRIPTION_DISABLED");
+  const bad = sttApp({ reply: async () => new Response(JSON.stringify({ error: { message: "bad key " + KEY } }), { status: 401 }) });
+  const b = await bad.send(turnWav());
+  const t = await b.text();
+  assert.equal(b.status, 502); assert.match(t, /PROVIDER_HTTP_401/); assert.ok(!/SECRETSECRET/.test(t));
+});
+
+test("intelligence status says whether ROYAL can transcribe a voice turn", async () => {
+  const { royal } = sttApp();
+  assert.equal(royal.intelligence.status().voice_transcription, "AVAILABLE");
+  assert.equal(sttApp({ apiKey: null }).royal.intelligence.status().voice_transcription, "NOT_CONFIGURED");
+});

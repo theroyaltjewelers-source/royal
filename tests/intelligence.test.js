@@ -30,7 +30,6 @@ import { ContactResearch, HunterProvider, isBusinessEmail, applyPattern } from "
 import { SafeFetcher, checkUrl, isPrivateAddress, htmlToText } from "../core/intelligence/research/fetch.js";
 import { ResendEmailProvider } from "../core/intelligence/comms.js";
 import { Metrics } from "../core/intelligence/metrics.js";
-import { toPcm16, fromPcm16, RealtimeVoice } from "../web/js/realtime.js";
 
 const DOCS = join(dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const clock = () => NOW;
@@ -370,25 +369,6 @@ test("safe fetching refuses private addresses, schemes and ports, and reads page
   } finally { srv.close(); }
   const t = htmlToText("<title>A &amp; B</title><style>x{}</style><p>Hello&nbsp;<b>world</b></p><script>bad()</script>");
   assert.equal(t.title, "A & B"); assert.match(t.text, /Hello world/); assert.ok(!/bad\(\)/.test(t.text));
-});
-
-test("realtime voice client: PCM conversion and the ask_royal tool loop", async () => {
-  const f = new Float32Array([0, 0.5, -0.5, 1, -1, 0.25]);
-  const back = fromPcm16(toPcm16(f, 24000));
-  assert.equal(back.length, f.length); for (let i = 0; i < f.length; i++) assert.ok(Math.abs(back[i] - f[i]) < 0.001);
-  assert.equal(toPcm16(new Float32Array(480), 48000).length, 480, "48 kHz frames are resampled to 24 kHz");
-  const sent = [];
-  const rv = new RealtimeVoice({ api: async () => ({ ok: false }), ask: async (t) => ({ summary: "Marcus Hill owes $13,000.", status: "OK", presentation: { surfaces: [] } }) });
-  rv.ws = { readyState: 1, send: (m) => sent.push(JSON.parse(m)) };
-  await rv._event(JSON.stringify({ type: "response.function_call_arguments.done", call_id: "call_1", name: "ask_royal", arguments: JSON.stringify({ request: "What does Marcus owe?" }) }));
-  assert.equal(sent[0].type, "conversation.item.create"); assert.equal(sent[0].item.type, "function_call_output"); assert.equal(sent[0].item.call_id, "call_1");
-  assert.equal(JSON.parse(sent[0].item.output).say, "Marcus Hill owes $13,000.");
-  assert.equal(sent[1].type, "response.create");
-  rv.responding = true;
-  await rv._event(JSON.stringify({ type: "input_audio_buffer.speech_started" }));
-  assert.equal(sent[2].type, "response.cancel", "barge-in cancels the response");
-  const unavailable = await new RealtimeVoice({ api: async () => ({ ok: false, message: "Realtime voice is switched off." }), onError: () => {} }).start();
-  assert.equal(unavailable, false, "no pretending when the server has no voice session");
 });
 
 /* ----------------------------------------------------- flagship flows --- */

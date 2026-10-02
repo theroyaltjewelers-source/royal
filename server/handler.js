@@ -169,12 +169,18 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
     try { res = await route(head ? new Request(req.url, { method: "GET", headers: req.headers, signal: req.signal }) : req); }
     catch (e) { res = fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed."); }
     const h = new Headers(res.headers); h.set("X-Request-Id", rid);
-    const out = new Response(head ? null : res.body, { status: res.status, headers: h });
+    /* An error's code is read for the log from the body itself, once, and
+       the body is rebuilt from that text: reading a stream twice would send
+       the page an empty error. */
+    let body = head ? null : res.body, code = null;
+    if (res.status >= 400 && !head && /json/.test(res.headers.get("content-type") || "")) {
+      const text = await res.text(); body = text;
+      try { code = JSON.parse(text).error || null; } catch (_) {}
+    }
+    const out = new Response(body, { status: res.status, headers: h });
     if (log) {
       const p = new URL(req.url).pathname.replace(/\/+$/, "") || "/", r = routeOf(p);
       if (res.status >= 400 || (p.startsWith("/v1/") && p !== "/v1/health")) {
-        let code = null;
-        if (res.status >= 400 && /json/.test(res.headers.get("content-type") || "")) { try { code = (await res.clone().json()).error || null; } catch (_) {} }
         try { log({ at: new Date().toISOString(), request_id: rid, method: req.method, route: r, status: res.status, ms: Date.now() - t0, error: code }); } catch (_) {}
       }
     }
