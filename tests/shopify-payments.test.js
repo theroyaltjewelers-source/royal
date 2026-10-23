@@ -39,6 +39,21 @@ test('custom amounts use the same authenticated checkout flow',async t=>{
   const f=await fixture(t); const p=intent({payment_type:'custom',request_reference:'',amount:'183.27'});
   assert.equal((await f.service.handle(f.request(p))).status,200); assert.equal(f.state.draft.subtotalPriceSet.presentmentMoney.amount,'183.27');
 });
+test('standalone account payment requires purpose and a dollar, without a business maximum',async t=>{
+  const f=await fixture(t);
+  const p=intent({payment_type:'custom',project_reference:'ACCOUNT_fixture',request_reference:'',description:'Repair payment',amount:'10000001.23'});
+  for (const bad of [{description:''},{description:' \t '},{amount:'0.99'},{amount:'1.001'},{amount:'1e6'}]) {
+    assert.equal((await f.service.handle(f.request({...p,...bad}))).status,400);
+  }
+  assert.equal(f.state.creates,0);
+  assert.equal((await f.service.handle(f.request(p))).status,200);
+  assert.equal(f.state.draft.subtotalPriceSet.presentmentMoney.amount,'10000001.23');
+});
+test('draft amount verification preserves cents beyond Number precision',async t=>{
+  const f=await fixture(t,{api:{create:async p=>({...draft(p),subtotalPriceSet:{presentmentMoney:{amount:'900719925474099.22',currencyCode:'USD'}}})}});
+  const p=intent({payment_type:'custom',project_reference:'ACCOUNT_fixture',request_reference:'',amount:'900719925474099.23',description:'Repair payment'});
+  assert.equal((await f.service.handle(f.request(p))).status,409);
+});
 test('body tampering and stale timestamps are rejected before Shopify',async t=>{
   const f=await fixture(t); const body=JSON.stringify(intent()); const h=signedHeaders(body,'/v1/intents',cfg.outId,cfg.outSecret);
   let r=await f.service.handle(new Request('https://backend.test/v1/intents',{method:'POST',body:JSON.stringify(intent({amount:'1.00'})),headers:h}));
