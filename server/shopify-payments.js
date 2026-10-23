@@ -90,7 +90,7 @@ export class ShopifyClient {
     if (data.userErrors?.length || data.deletedId !== id) throw fault(409, 'DRAFT_NOT_CANCELLED');
   }
   async ensureWebhooks() {
-    const uri = 'https://thehouseofroyaltdesign.com/api/shopify/webhooks';
+    const uri = 'https://royaltjewelers.repaint.site/api/shopify/webhooks';
     const current = (await this.graphql(QUERIES.hooks)).webhookSubscriptions.nodes;
     if (current.length >= 100) throw fault(503, 'WEBHOOK_SETUP_REQUIRES_REVIEW');
     for (const topic of ['ORDERS_PAID', 'REFUNDS_CREATE', 'DRAFT_ORDERS_CREATE', 'DRAFT_ORDERS_UPDATE', 'DRAFT_ORDERS_DELETE']) {
