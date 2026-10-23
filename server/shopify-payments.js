@@ -93,7 +93,7 @@ export class ShopifyClient {
     const uri = 'https://royaltjewelers.repaint.site/api/shopify/webhooks';
     const current = (await this.graphql(QUERIES.hooks)).webhookSubscriptions.nodes;
     if (current.length >= 100) throw fault(503, 'WEBHOOK_SETUP_REQUIRES_REVIEW');
-    for (const topic of ['ORDERS_PAID', 'REFUNDS_CREATE', 'DRAFT_ORDERS_CREATE', 'DRAFT_ORDERS_UPDATE', 'DRAFT_ORDERS_DELETE']) {
+    for (const topic of ['ORDERS_PAID', 'ORDERS_UPDATED', 'REFUNDS_CREATE', 'DRAFT_ORDERS_CREATE', 'DRAFT_ORDERS_UPDATE', 'DRAFT_ORDERS_DELETE']) {
       if (current.some(h => h.topic === topic && h.uri === uri)) continue;
       const result = (await this.graphql(QUERIES.hook, { topic, webhookSubscription: { uri, format: 'JSON' } })).webhookSubscriptionCreate;
       if (result.userErrors?.length || !result.webhookSubscription) throw fault(503, 'WEBHOOK_SETUP_FAILED');
