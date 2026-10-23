@@ -15,9 +15,9 @@ const fault = (status, code) => Object.assign(new Error(code), { status, code })
 const sha = body => createHash('sha256').update(body).digest('hex');
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export function cents(value) {
-  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,6})\.\d{2}$/.test(value)) throw fault(400, 'INVALID_AMOUNT');
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.\d{2}$/.test(value)) throw fault(400, 'INVALID_AMOUNT');
   const [whole, fraction] = value.split('.');
-  return Number(whole) * 100 + Number(fraction);
+  return BigInt(whole) * 100n + BigInt(fraction);
 }
 export function signedHeaders(body, path, keyId, secret, timestamp = new Date().toISOString(), nonce = randomUUID()) {
   const hash = sha(body);
@@ -119,7 +119,7 @@ export function validateIntent(p, shop) {
       typeof p.project_reference !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(p.project_reference) ||
       typeof p.request_reference !== 'string' || !/^[A-Za-z0-9_-]{0,100}$/.test(p.request_reference) ||
       (p.payment_type === 'request' && !p.request_reference) || typeof p.description !== 'string' || p.description.length > 250 ||
-      cents(p.amount) < 100 || cents(p.amount) > 100000000) throw fault(400, 'INVALID_INTENT');
+      (p.payment_type === 'custom' && !p.description.trim()) || cents(p.amount) < 100n) throw fault(400, 'INVALID_INTENT');
   if ('lines' in p || 'breakdown' in p) throw fault(400, 'OBSOLETE_FEE_OR_TAX_PAYLOAD');
   return Object.fromEntries(['version','shop_domain','attempt_code','payment_type','project_reference','request_reference','amount','currency','description','test'].map(k => [k, p[k]]));
 }
@@ -127,7 +127,9 @@ function checkedDraft(draft, p, cfg) {
   if (!draft || !/^gid:\/\/shopify\/DraftOrder\/\d+$/.test(draft.id)) throw fault(409, 'DRAFT_REQUIRES_REVIEW');
   if (draft.status === 'COMPLETED') throw fault(409, 'CHECKOUT_COMPLETED');
   const m = draft.subtotalPriceSet?.presentmentMoney;
-  if (!m || m.currencyCode !== 'USD' || Number(m.amount) !== Number(p.amount) ||
+  const shopAmount = typeof m?.amount === 'string' && /^(0|[1-9]\d*)(\.\d{1,2})?$/.test(m.amount)
+    ? `${m.amount.split('.')[0]}.${(m.amount.split('.')[1] || '').padEnd(2, '0')}` : null;
+  if (!m || m.currencyCode !== 'USD' || !shopAmount || cents(shopAmount) !== cents(p.amount) ||
       !draft.customAttributes?.some(a => a.key === 'rt_attempt_code' && a.value === p.attempt_code)) throw fault(409, 'DRAFT_REQUIRES_REVIEW');
   let u; try { u = new URL(draft.invoiceUrl); } catch { throw fault(409, 'CHECKOUT_NOT_READY'); }
   if (u.protocol !== 'https:' || u.username || u.password || u.port || !cfg.checkoutHosts.includes(u.hostname) || !u.pathname.includes('/invoices/')) throw fault(409, 'CHECKOUT_URL_INVALID');
