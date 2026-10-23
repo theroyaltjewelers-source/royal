@@ -26,7 +26,7 @@ Set these only in Render's environment settings, never in source control:
 
 Use one process/instance with the existing persistent disk. This implementation serializes checkout operations and flushes state before Shopify mutations. Do not scale to multiple writers without replacing the file store with transactional database locks.
 
-Repaint's webhook secret must be the same app Client secret. Backend startup registers app-owned `ORDERS_PAID`, `REFUNDS_CREATE`, `DRAFT_ORDERS_CREATE`, `DRAFT_ORDERS_UPDATE`, and `DRAFT_ORDERS_DELETE` subscriptions at `https://thehouseofroyaltdesign.com/api/shopify/webhooks`. It does not replace unrelated subscriptions. The app needs `write_draft_orders` and `read_orders`; it never issues refunds.
+Repaint's webhook secret must be the same app Client secret. Backend startup registers app-owned `ORDERS_PAID`, `ORDERS_UPDATED`, `REFUNDS_CREATE`, `DRAFT_ORDERS_CREATE`, `DRAFT_ORDERS_UPDATE`, and `DRAFT_ORDERS_DELETE` subscriptions at `https://royaltjewelers.repaint.site/api/shopify/webhooks`. Order updates let Repaint reconcile refunds that were pending when first created. It does not replace unrelated subscriptions. The app needs `write_draft_orders` and `read_orders`; it never issues refunds. Keep the Repaint webhook domain connected to the website.
 
 ## Protocol
 
