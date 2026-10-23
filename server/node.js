@@ -12,6 +12,7 @@ import { bridgeFromEnv } from "../core/grokbot/bridge.js";
 import { storeFromEnv } from "./store-env.js";
 import { nodeAdapter } from "./node-adapter.js";
 import { intelligenceFromEnv } from "./intelligence-env.js";
+import { paymentsFromEnv } from "./shopify-payments.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
@@ -52,7 +53,8 @@ const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
 const log = env.ROYAL_ACCESS_LOG === "off" ? null : (l) => console.log("ROYAL_ACCESS " + JSON.stringify(l));
 const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles, log });
 
-const server = http.createServer(nodeAdapter(handler));
+const payments = await paymentsFromEnv(env);
+const server = http.createServer(nodeAdapter(async request => (await payments.handle(request)) || handler(request)));
 /* requestTimeout bounds how long a request may take to arrive (a slow upload),
    not how long a response may last, so live streams are unaffected; their 25
    second heartbeat keeps proxies from closing them. */
