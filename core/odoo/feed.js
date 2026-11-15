@@ -76,7 +76,9 @@ export function feedPath(baseUrl) {
 export function createFeedClient({ baseUrl, keyId, secret, fetchImpl = globalThis.fetch, clock = () => new Date(), nonce = feedNonce, timeoutMs = 20000 }) {
   const { origin, path } = feedPath(baseUrl);
 
-  async function request(method, target, bodyObj) {
+  /* status and retryAfter stay visible so the changes adapter can back off
+     on 429 and 503. Ack and the event pull still treat any refusal as an error. */
+  async function exchange(method, target, bodyObj) {
     const timestamp = feedTimestamp(clock());
     const n = nonce();
     if (typeof n !== "string" || n.length < 16 || n.length > 100) throw new Error("The feed nonce must be 16 to 100 characters.");
@@ -88,11 +90,20 @@ export function createFeedClient({ baseUrl, keyId, secret, fetchImpl = globalThi
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch (_) { json = null; }
-    if (res.status === 404) throw new Error("The House feed returned 404. Save the same key id and secret on the Repaint Odoo sync page.");
-    if (!res.ok || (json && json.ok === false)) {
-      const why = (json && typeof json.error === "string" && json.error) || ("HTTP " + res.status);
-      const hint = res.status === 401 ? " Check that REPAINT_FEED_KEY_ID and REPAINT_FEED_SECRET match the Repaint Odoo sync page." : "";
-      throw new Error("The House feed refused the request (" + res.status + "): " + why + "." + hint);
+    return { status: res.status, retryAfter: res.headers.get("retry-after"), json, body: raw };
+  }
+
+  async function request(method, target, bodyObj) {
+    const got = await exchange(method, target, bodyObj);
+    const json = got.json;
+    if (got.status === 404) throw new Error("The House feed returned 404. Save the same key id and secret on the Repaint Odoo sync page.");
+    if (got.status < 200 || got.status >= 300 || (json && json.ok === false)) {
+      const why = (json && typeof json.error === "string" && json.error) || ("HTTP " + got.status);
+      const hint = got.status === 401 ? " Check that REPAINT_FEED_KEY_ID and REPAINT_FEED_SECRET match the Repaint Odoo sync page." : "";
+      const err = new Error("The House feed refused the request (" + got.status + "): " + why + "." + hint);
+      err.status = got.status;
+      err.retryAfter = got.retryAfter;
+      throw err;
     }
     return json || {};
   }
@@ -106,6 +117,11 @@ export function createFeedClient({ baseUrl, keyId, secret, fetchImpl = globalThi
     },
     ack(body) {
       return request("POST", path + "/ack", { delivered: body.delivered || [], failed: body.failed || [] });
+    },
+    /* Inbound dashboard changes. Returns the status instead of throwing, so
+       the caller can retry 429 and 503. The body is whatever the adapter built. */
+    changes(body) {
+      return exchange("POST", path + "/changes", body);
     },
   };
 }

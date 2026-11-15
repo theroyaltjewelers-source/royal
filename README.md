@@ -153,6 +153,30 @@ Applied event ids, the latest record version, and the Odoo ids are stored in ROY
 
 Odoo Online will refuse a burst of calls with HTTP 429. I wait between calls, and I retry 429 and 503, following the Retry-After header when Odoo sends one. A payment that still fails is not acknowledged, and I keep the event and try it on the next pass even if the feed has nothing new. Acknowledging the failure is what made those payments disappear from later passes.
 
+### When you edit in Odoo
+
+Edits in Odoo can come back to the dashboard. This direction is off until you set `ODOO_REVERSE_SYNC_ENABLED` to `true`. The House feed is already Live, and it has no dry run of its own, so leave the switch off until you have looked at a local preview.
+
+1. On Render, add `ODOO_REVERSE_SYNC_ENABLED` = `true` and `ODOO_REVERSE_SYNC_DRY_RUN` = `true`. Save, and wait until the deploy is Live.
+2. Change one contact in Odoo (save it again if it was last saved before this switch). Run the status curl from step 6. The `reverse` section shows `dry_run: true` and a `preview` of what I would send. Nothing is posted.
+3. When the preview looks right, set `ODOO_REVERSE_SYNC_DRY_RUN` to `false` and save again.
+
+I only notice records saved after the switch is turned on. Older rows are not copied until you save them again in Odoo.
+
+What comes back:
+
+(a) A contact whose reference is `RT:` plus a House client id. I send the name, email, phone, address and whether it is archived.
+
+(b) A lead whose description contains `House inquiry RT:`. The stage becomes an inquiry status: New is new, Won is converted, Lost is closed, a stage whose name mentions a quote is quoting, and any other open stage is contacted. The House does not accept a separate waiting status, so a waiting stage is contacted.
+
+(c) A customer payment you create in Odoo is recorded on the client's dashboard profile, with no review step. I find the client from the contact's `RT:` reference, or from the email if there is no reference. The Odoo payment id is sent so the same payment is not created twice. Edits to the amount, date or memo, and a cancellation, are sent too. The method is cash, card, zelle, wire or check when the Odoo journal or method says so, and otherwise I leave the House method alone on an edit. A new payment with no recognisable method is sent as other. A Shopify payment is not sent. If the House refuses one, I log it and I do not keep retrying that save.
+
+A feed event marked `origin` `odoo` is the echo of something I just sent. I acknowledge it and I do not write it back to Odoo. A missing origin is treated as a House edit.
+
+If the same field was edited on both sides, the later edit wins. If the times are equal, the dashboard wins. I remember the fields I last wrote, because the Odoo key is your own user and cannot tell your edit from mine.
+
+`GET /v1/odoo-sync/status` includes a `reverse` section: whether it is on, whether it is only logging, the last counts, and the last errors. Secrets are not in that answer.
+
 ### Rotate the Odoo key
 
 1. In Odoo, make a new API key the same way as step 3. Do this before you delete the old one.

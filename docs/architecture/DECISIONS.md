@@ -139,3 +139,11 @@
 **Tradeoffs.** Odoo API keys expire within three months and must be rotated by hand. A posted payment whose amount changes is reset to draft and posted again; if Odoo refuses (it is reconciled), the event fails and the payment is left posted. Test-flagged events are acknowledged and not written unless `ODOO_SYNC_ALLOW_TEST=true`. `bridge.test` is never written. The model is not given a tool for this, so a conversation cannot start a sync. The hourly Action uses GitHub minutes even when its secrets are missing, because the job still starts and exits.
 **Proved.** `tests/odoo-sync.test.js`: the feed signature (including the empty-body hash and a UTF-8 key), paging, dedup and versions, the test flag, and the Odoo mapping against a stand-in Odoo. No test calls the real feed or the real Odoo.
 **Reversibility.** High. Unset `ODOO_SYNC_ENABLED` and disable the Action. The stored rows can stay; they are not read by anything else.
+
+## ADR-019. Edits in Odoo can return to the House
+
+**Decision.** When `ODOO_REVERSE_SYNC_ENABLED=true`, the same minute poll reads Odoo by `write_date` and posts `contact.update`, `inquiry.status`, `payment.create`, `payment.update` and `payment.void` to the House `/changes` route, signed like the feed. The cursor and a fingerprint of the fields ROYAL last wrote live in the existing store. Feed events with `origin` `odoo` are acknowledged and not written back. `ODOO_REVERSE_SYNC_DRY_RUN=true` logs the batch and does not post. The House itself has no dry run.
+**Why.** Tahir edits contacts, leads and payments in Odoo and wants the dashboard to follow, including new payments with no review queue. The Odoo key is his own user, so `write_uid` cannot separate his edits from ROYAL's.
+**Tradeoffs.** Turning the switch on does not copy history. A record is sent after it is saved again. Shopify payments are refused by the House and are not retried. An open lead's stage is learned once and only later moves are sent, so a stage we never write is not immediately pushed over the dashboard status.
+**Proved.** `tests/odoo-reverse.test.js`: stage and method mapping, the fingerprint, newest-edit-wins with a tie kept by the dashboard, the contract body, dedupe on `odoo_payment_id`, conflict then resend, and a dry run that does not post.
+**Reversibility.** High. Set `ODOO_REVERSE_SYNC_ENABLED` to anything but `true`.
