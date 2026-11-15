@@ -205,7 +205,10 @@ export async function noteForwardWrite(store, event, odooId, now) {
 
 /* Per field: Odoo must be strictly newer than the dashboard's last edit.
    An open inquiry whose stage we have not baselined yet is our own write. */
-export function decideFields(kind, projection, shadow, odooAt) {
+export function decideFields(kind, projection, shadow, odooAt, { seed = false } = {}) {
+  /* First look at a record we already linked: remember Odoo as it is and
+     send nothing. An empty phone in Odoo must not blank the dashboard. */
+  if (seed && (!shadow || !shadow.fingerprint)) return { action: "baseline", reason: "first-sight", fields: {} };
   const fp = fingerprint(projection);
   if (shadow && shadow.fingerprint === fp) return { action: "skip", reason: "echo", fields: {} };
   if (kind === "inquiry" && shadow && shadow.stage_baseline && OPEN.has(shadow.fields && shadow.fields.status && shadow.fields.status.value) && OPEN.has(projection.status)) {
@@ -274,7 +277,7 @@ export function paymentChange(row, fields, housePaymentId, version) {
       ref, type: "payment.create", odoo_payment_id: odooId, amount: fields.amount, date: fields.date, method: fields.method || "other",
     };
     if (fields.client_id) body.client_id = fields.client_id;
-    else body.client_email = fields.email;
+    else body.client_email = text(fields.email).trim().toLowerCase();
     const memo = houseMemo(fields.memo);
     if (memo) body.memo = memo;
     return body;
@@ -304,6 +307,19 @@ async function loadShadow(store, odooKey, houseKey) {
 
 async function saveShadow(store, keys, data) {
   for (const key of keys) if (key) await cas(store, SHADOW, key, () => data);
+}
+
+async function seedLinked(store, keys, kind, houseId, projection, writeDate, shadowId) {
+  await saveShadow(store, keys, {
+    kind, house_id: houseId || "", fingerprint: fingerprint(projection),
+    fields: shadowFields(projection, writeDate), dashboard: shadowFields(projection, writeDate),
+    stage_baseline: kind === "inquiry" && OPEN.has(projection.status),
+    at: writeDate, version: null, house_key: shadowId,
+  });
+}
+
+function clearDeferred(cursor, id) {
+  if (cursor.deferred) delete cursor.deferred[String(id)];
 }
 
 function m2o(value) {
@@ -343,6 +359,13 @@ export async function runReverse({ odoo, post, store, dryRun = false, now = () =
     const rows = await odoo.searchRead(model.name, { domain, fields: model.fields, limit: 50, order: "write_date asc, id asc", context: model.context });
     const partners = {};
     if (model.name === "account.payment") {
+      const today = now().toISOString().slice(0, 10);
+      const due = Object.values(cursor.deferred || {}).filter((item) => item.date <= today).map((item) => item.id);
+      if (due.length) {
+        const extra = await odoo.searchRead("account.payment", { domain: [["id", "in", due]], fields: model.fields, context: model.context });
+        const seen = new Set(rows.map((row) => row.id));
+        for (const row of extra || []) if (!seen.has(row.id)) rows.push(row);
+      }
       const ids = [...new Set(rows.map((row) => m2o(row.partner_id)).filter(Boolean))];
       if (ids.length) {
         const found = await odoo.searchRead("res.partner", { domain: [["id", "in", ids]], fields: ["id", "ref", "email", "name"], limit: ids.length, context: { active_test: false } });
@@ -357,7 +380,11 @@ export async function runReverse({ odoo, post, store, dryRun = false, now = () =
           if (!house) { summary.skipped++; accepted.push(["res.partner", row]); continue; }
           const projection = contactProjection(row);
           const shadow = await loadShadow(store, "res.partner:" + row.id, "client:" + house);
-          const decision = decideFields("contact", projection, shadow && shadow.data, at);
+          const decision = decideFields("contact", projection, shadow && shadow.data, at, { seed: true });
+          if (decision.reason === "first-sight") {
+            await seedLinked(store, ["client:" + house, "res.partner:" + row.id], "contact", house, projection, row.write_date, "client:" + house);
+            summary.skipped++; accepted.push(["res.partner", row]); continue;
+          }
           if (decision.action !== "send") { summary.skipped++; accepted.push(["res.partner", row]); continue; }
           const version = shadow && shadow.data && shadow.data.version;
           outgoing.push({ change: contactChange(row, decision.fields, version), shadowId: "client:" + house, odooKey: "res.partner:" + row.id, projection, at: row.write_date, model: "res.partner" });
@@ -366,7 +393,11 @@ export async function runReverse({ odoo, post, store, dryRun = false, now = () =
           if (!house) { summary.skipped++; accepted.push(["crm.lead", row]); continue; }
           const projection = leadProjection(row);
           const shadow = await loadShadow(store, "crm.lead:" + row.id, "inquiry:" + house);
-          const decision = decideFields("inquiry", projection, shadow && shadow.data, at);
+          const decision = decideFields("inquiry", projection, shadow && shadow.data, at, { seed: true });
+          if (decision.reason === "first-sight") {
+            await seedLinked(store, ["inquiry:" + house, "crm.lead:" + row.id], "inquiry", house, projection, row.write_date, "inquiry:" + house);
+            summary.skipped++; accepted.push(["crm.lead", row]); continue;
+          }
           if (decision.action === "baseline") {
             const data = shadow.data;
             data.fields = { ...data.fields, stage: { value: decision.stage, at: row.write_date } };
@@ -391,14 +422,22 @@ export async function runReverse({ odoo, post, store, dryRun = false, now = () =
             summary.failed++; summary.errors.push({ at: now().toISOString(), odoo_id: row.id, kind: "payment", error: "This payment has no House client id and no email, so I did not send it." });
             accepted.push(["account.payment", row]); continue;
           }
-          const decision = decideFields("payment", projection, shadow && shadow.data, at);
-          if (decision.action !== "send") { summary.skipped++; accepted.push(["account.payment", row]); continue; }
-          if (!housePaymentId && projection.status === "voided") { summary.skipped++; accepted.push(["account.payment", row]); continue; }
+          const decision = decideFields("payment", projection, shadow && shadow.data, at, { seed: !!housePaymentId });
+          if (decision.reason === "first-sight") {
+            await seedLinked(store, [fromMemo ? "payment:" + fromMemo : "account.payment:" + row.id, "account.payment:" + row.id], "payment", housePaymentId, projection, row.write_date, fromMemo ? "payment:" + fromMemo : "account.payment:" + row.id);
+            clearDeferred(cursor, row.id);
+            summary.skipped++; accepted.push(["account.payment", row]); continue;
+          }
+          if (decision.action !== "send") { clearDeferred(cursor, row.id); summary.skipped++; accepted.push(["account.payment", row]); continue; }
+          if (!housePaymentId && projection.status === "voided") { clearDeferred(cursor, row.id); summary.skipped++; accepted.push(["account.payment", row]); continue; }
           const today = now().toISOString().slice(0, 10);
           if (!housePaymentId && projection.date > today) {
-            summary.failed++; summary.errors.push({ at: now().toISOString(), odoo_id: row.id, kind: "payment", error: "The payment date is in the future, so I did not send it yet." });
-            break;
+            if (!cursor.deferred) cursor.deferred = {};
+            cursor.deferred[String(row.id)] = { id: row.id, date: projection.date, write_date: row.write_date };
+            summary.skipped++; summary.errors.push({ at: now().toISOString(), odoo_id: row.id, kind: "payment", error: "The payment date is in the future, so I did not send it yet." });
+            accepted.push(["account.payment", row]); continue;
           }
+          clearDeferred(cursor, row.id);
           const version = shadow && shadow.data && shadow.data.version;
           const sentFields = housePaymentId ? decision.fields : projection;
           if (!housePaymentId && !(Number(projection.amount) > 0)) {

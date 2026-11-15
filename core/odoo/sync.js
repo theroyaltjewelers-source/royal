@@ -123,7 +123,7 @@ async function finishRetry(store, eventId, now) {
 
 /* Pull, apply, ack. `feed` and `apply` are injectable. Pages are acked
    before the next page is requested, inside the lease the feed keeps. */
-export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent, now = () => new Date(), limit = 50, maxPages = 200 }) {
+export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent, now = () => new Date(), limit = 50, maxPages = 200, log = () => {} }) {
   const cache = {};
   const totals = { delivered: 0, failed: 0, skipped: 0, applied: 0, errors: [] };
   const handled = new Set();
@@ -271,7 +271,7 @@ export function createSync({ store, cfg, feed, odoo, now = () => new Date(), log
     const feedClient = feed || createFeedClient({ baseUrl: config.feedBase, keyId: config.keyId, secret: config.feedSecret });
     const odooClient = odoo || createOdooClient({ url: config.odooUrl, database: config.db, apiKey: config.apiKey });
     try {
-      const result = await runPass({ feed: feedClient, store, cfg: config, odoo: odooClient, apply, now });
+      const result = await runPass({ feed: feedClient, store, cfg: config, odoo: odooClient, apply, now, log });
       Object.assign(totals, result);
       await saveState({ ok: true, error: null, totals });
       log("ROYAL: Odoo sync pass applied " + totals.applied + ", skipped " + totals.skipped + ", failed " + totals.failed + ".");

@@ -161,7 +161,7 @@ Edits in Odoo can come back to the dashboard. This direction is off until you se
 2. Change one contact in Odoo (save it again if it was last saved before this switch). Run the status curl from step 6. The `reverse` section shows `dry_run: true` and a `preview` of what I would send. Nothing is posted.
 3. When the preview looks right, set `ODOO_REVERSE_SYNC_DRY_RUN` to `false` and save again.
 
-I only notice records saved after the switch is turned on. Older rows are not copied until you save them again in Odoo.
+I only notice records saved after the switch is turned on. The first time I see a contact, lead, or payment that is already linked, I remember its current Odoo values and send nothing, so an empty phone in Odoo does not blank the dashboard. The next edit sends only the fields that changed. A payment dated in the future waits until that date and does not hold up other payments.
 
 What comes back:
 

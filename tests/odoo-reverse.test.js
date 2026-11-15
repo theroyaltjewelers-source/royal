@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MemoryStore } from "../core/store.js";
 import { planEvent } from "../core/odoo/plan.js";
+import { runPass } from "../core/odoo/sync.js";
 import { pushChanges, readChangeResults, toBatchPayload } from "../core/odoo/changes.js";
 import {
   REVERSE_ID, REVERSE_KIND, contactChange, decideFields, fingerprint, houseIdFromMemo, inquiryChange, inquiryStatusFromLead,
@@ -64,6 +65,8 @@ test("changes match the House contract, including dedupe and if_version", () => 
   assert.equal(created.method, "other");
   assert.equal("if_version" in created, false);
   assert.equal(created.client_email, undefined);
+  const byEmail = paymentChange({ id: 9 }, { amount: "10.00", date: "2026-11-15", method: "cash", email: " Jordan@Example.com " }, "");
+  assert.equal(byEmail.client_email, "jordan@example.com");
 
   const updated = paymentChange({ id: 512 }, { amount: "900.00", method: "other" }, "rec_pay", 7);
   assert.equal(updated.type, "payment.update");
@@ -112,6 +115,22 @@ test("results distinguish applied, duplicate and not_allowed, and 429 is retried
   assert.equal(out.results[0].version, 57);
 });
 
+test("runPass with reverse sync on does not require a log function", async () => {
+  const store = new MemoryStore();
+  const feed = {
+    async getEvents() { return { ok: true, events: [], has_more: false }; },
+    async ack() { return { ok: true }; },
+    async changes() { throw new Error("nothing to post"); },
+  };
+  const result = await runPass({
+    feed, store, odoo: { async searchRead() { return []; } },
+    cfg: { reverseEnabled: true, reverseDryRun: false, allowTest: false, secrets: [] },
+  });
+  assert.equal(result.reverse.initialized, true);
+  assert.equal(result.reverse.sent, 0);
+  assert.equal(result.applied, 0);
+});
+
 test("origin odoo is acknowledged and not written back; a missing origin is the House", () => {
   assert.equal(planEvent({ event_id: "evt_o", event_type: "client.updated", origin: "odoo", record_version: 57, data: { client_id: "rec_client" } }).reason, "origin-odoo");
   assert.equal(planEvent({ event_id: "evt_h", event_type: "client.updated", origin: "house", record_version: 4, data: { client_id: "rec_client" } }).action, "apply");
@@ -143,15 +162,54 @@ async function seeded(store) {
   }, null);
 }
 
-test("dry run logs the change and does not post it", async () => {
+test("first sight of a linked contact is a baseline, and a later edit sends only the changed field", async () => {
   const store = new MemoryStore();
   await seeded(store);
-  const odoo = odooWith({ "res.partner": [{ id: 88, name: "Jordan Reyes", email: "jordan@example.com", phone: "1", street: "12 Main", street2: "", ref: "RT:rec_client", active: true, write_date: "2026-11-15 19:00:00" }] });
-  let posted = 0;
-  const summary = await runReverse({ odoo, store, dryRun: true, post: async () => { posted++; return { status: 200, json: {} }; }, now: () => new Date("2026-11-15T20:00:00Z") });
-  assert.equal(posted, 0);
-  assert.equal(summary.preview[0].type, "contact.update");
-  assert.equal(summary.preview[0].house_id, "rec_client");
+  const row = { id: 88, name: "Jordan Reyes", email: "jordan@example.com", phone: "", street: "", street2: "", ref: "RT:rec_client", active: true, write_date: "2026-11-15 19:00:00" };
+  const odoo = odooWith({ "res.partner": [row] });
+  const bodies = [];
+  const post = async (body) => {
+    bodies.push(body);
+    return { status: 200, json: { ok: true, results: body.changes.map((change) => ({ ref: change.ref, type: change.type, ok: true, status: "applied", house_id: change.house_id, version: 2, event_id: "evt_2", event_origin: "odoo", code: "", error: "" })) } };
+  };
+  const first = await runReverse({ odoo, store, post, now: () => new Date("2026-11-15T20:00:00Z") });
+  assert.equal(first.sent, 0);
+  assert.equal(bodies.length, 0);
+  assert.ok((await store.get("odoo_shadow", "client:rec_client")).data.fingerprint);
+  row.name = "Jordan R";
+  row.write_date = "2026-11-15 21:00:00";
+  const second = await runReverse({ odoo, store, post, now: () => new Date("2026-11-15T22:00:00Z") });
+  assert.equal(second.sent, 1);
+  assert.equal(bodies[0].changes[0].name, "Jordan R");
+  assert.equal(bodies[0].changes[0].phone, undefined);
+  assert.equal(bodies[0].changes[0].address, undefined);
+  assert.equal(bodies[0].changes[0].email, undefined);
+});
+
+test("a future payment does not block a payment dated today", async () => {
+  const store = new MemoryStore();
+  await seeded(store);
+  const future = { id: 10, amount: 20, date: "2026-12-01", memo: "later", state: "posted", partner_id: [7, "Jordan"], payment_method_line_id: [1, "Manual"], journal_id: [2, "Bank"], currency_id: [1, "USD"], write_date: "2026-11-15 19:00:00" };
+  const today = { id: 11, amount: 30, date: "2026-11-15", memo: "now", state: "posted", partner_id: [7, "Jordan"], payment_method_line_id: [1, "Manual"], journal_id: [2, "Bank"], currency_id: [1, "USD"], write_date: "2026-11-15 19:01:00" };
+  const odoo = odooWith({ "account.payment": [future, today] }, [{ id: 7, ref: "RT:rec_client", email: "Jordan@Example.com", name: "Jordan" }]);
+  const bodies = [];
+  const post = async (body) => {
+    bodies.push(body);
+    return { status: 200, json: { ok: true, results: body.changes.map((change) => ({ ref: change.ref, type: change.type, ok: true, status: "applied", house_id: "rec_" + change.odoo_payment_id, version: 1, event_id: "evt", event_origin: "odoo", code: "", error: "" })) } };
+  };
+  const first = await runReverse({ odoo, store, post, now: () => new Date("2026-11-15T20:00:00Z") });
+  assert.equal(first.sent, 1);
+  assert.equal(bodies[0].changes.length, 1);
+  assert.equal(bodies[0].changes[0].odoo_payment_id, "11");
+  assert.equal(bodies[0].changes[0].client_email, undefined);
+  assert.equal(bodies[0].changes[0].client_id, "rec_client");
+  const cursor = (await store.get(REVERSE_KIND, REVERSE_ID)).data;
+  assert.equal(cursor.deferred["10"].date, "2026-12-01");
+  assert.ok(cursor["account.payment"].write_date >= "2026-11-15 19:01:00");
+  const later = await runReverse({ odoo, store, post, now: () => new Date("2026-12-01T12:00:00Z") });
+  assert.equal(later.sent, 1);
+  assert.equal(bodies[1].changes[0].odoo_payment_id, "10");
+  assert.equal((await store.get(REVERSE_KIND, REVERSE_ID)).data.deferred["10"], undefined);
 });
 
 test("a new Odoo payment is created once, then the same id is not sent again", async () => {
