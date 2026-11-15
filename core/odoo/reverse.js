@@ -230,10 +230,11 @@ export function decideFields(kind, projection, shadow, odooAt, { seed = false } 
   return { action: "send", reason: "", fields };
 }
 
+/* Odoo domains are one flat prefix list. A nested list is not a sub-domain.
+   It is read as a single item and rejected. Spread the cursor clause in. */
 export function sinceDomain(link, cursor) {
-  if (!cursor || !cursor.write_date) return link;
-  const newer = ["|", ["write_date", ">", cursor.write_date], "&", ["write_date", "=", cursor.write_date], ["id", ">", cursor.id || 0]];
-  return ["&", link, newer];
+  if (!cursor || !cursor.write_date) return [link];
+  return ["&", link, "|", ["write_date", ">", cursor.write_date], "&", ["write_date", "=", cursor.write_date], ["id", ">", cursor.id || 0]];
 }
 
 function withVersion(body, version) {

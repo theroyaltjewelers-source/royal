@@ -6,10 +6,41 @@ import { runPass } from "../core/odoo/sync.js";
 import { pushChanges, readChangeResults, toBatchPayload } from "../core/odoo/changes.js";
 import {
   REVERSE_ID, REVERSE_KIND, contactChange, decideFields, fingerprint, houseIdFromMemo, inquiryChange, inquiryStatusFromLead,
-  looksShopify, noteForwardWrite, paymentChange, paymentMethodFromOdoo, runReverse,
+  looksShopify, noteForwardWrite, paymentChange, paymentMethodFromOdoo, runReverse, sinceDomain,
 } from "../core/odoo/reverse.js";
 
+/* Odoo reads a domain as one flat prefix list. '&' and '|' take two
+   expressions, '!' takes one. A nested list is an invalid item, which is
+   the failure ['&', leaf, ['|', ...]] produced. */
+function checkOdooDomain(domain) {
+  assert.ok(Array.isArray(domain), "domain must be a list");
+  if (!domain.length) return;
+  const arity = { "!": 1, "&": 2, "|": 2 };
+  let expected = 1;
+  for (const token of domain) {
+    if (expected === 0) expected = 1;
+    if (typeof token === "string" && token in arity) {
+      expected += arity[token] - 1;
+      continue;
+    }
+    assert.ok(Array.isArray(token) && token.length === 3 && typeof token[0] === "string" && typeof token[1] === "string",
+      "nested or invalid domain item: " + JSON.stringify(token));
+    expected -= 1;
+  }
+  assert.equal(expected, 0, "domain operator arity: " + JSON.stringify(domain));
+}
+
 const at = "2026-11-15T18:00:00Z";
+
+test("the write_date cursor domain is one flat prefix list", () => {
+  const link = ["ref", "=like", "RT:%"];
+  const domain = sinceDomain(link, { write_date: "2026-11-15 21:39:46", id: 757 });
+  assert.deepEqual(domain, ["&", link, "|", ["write_date", ">", "2026-11-15 21:39:46"], "&", ["write_date", "=", "2026-11-15 21:39:46"], ["id", ">", 757]]);
+  checkOdooDomain(domain);
+  checkOdooDomain(sinceDomain(link, null));
+  checkOdooDomain([["id", "in", [10, 11]]]);
+  assert.throws(() => checkOdooDomain(["&", link, ["|", ["write_date", ">", "2026-11-15 21:39:46"], "&", ["write_date", "=", "2026-11-15 21:39:46"], ["id", ">", 757]]]));
+});
 
 test("lead stage and payment method map onto the House's allowed values", () => {
   assert.equal(inquiryStatusFromLead({ stage_id: [1, "New"], won_status: "pending", active: true }), "new");
@@ -142,6 +173,7 @@ function odooWith(pages, partners = []) {
   return {
     calls,
     async searchRead(model, spec) {
+      checkOdooDomain(spec.domain);
       calls.push({ model, order: spec.order || "" });
       if (String(spec.order).includes("desc")) return [{ id: 1, write_date: "2026-11-15 18:00:00" }];
       if (JSON.stringify(spec.domain || []).includes('"in"')) return partners.slice();
