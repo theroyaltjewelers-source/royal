@@ -20,6 +20,21 @@ function clean(obj) {
   return out;
 }
 
+const RETRY_STATUSES = new Set([429, 503]);
+
+/* Retry-After is either seconds or an HTTP date. Missing or unreadable
+   values fall back to 1s, 2s, 4s, capped at 30s. A present value is honored
+   up to 120s so one huge header cannot stall a pass. */
+export function retryWaitMs(attempt, retryAfter, now = Date.now()) {
+  if (retryAfter != null && String(retryAfter).trim() !== "") {
+    const raw = String(retryAfter).trim();
+    if (/^\d+(\.\d+)?$/.test(raw)) return Math.min(120000, Math.max(0, Math.round(Number(raw) * 1000)));
+    const when = Date.parse(raw);
+    if (Number.isFinite(when)) return Math.min(120000, Math.max(0, when - now));
+  }
+  return Math.min(30000, 1000 * 2 ** attempt);
+}
+
 export function createdId(result) {
   if (typeof result === "number" && Number.isFinite(result)) return result;
   if (Array.isArray(result)) {
@@ -31,14 +46,32 @@ export function createdId(result) {
   return null;
 }
 
-export function createOdooClient({ url, database, apiKey, fetchImpl = globalThis.fetch, timeoutMs = 20000 }) {
+export function createOdooClient({ url, database, apiKey, fetchImpl = globalThis.fetch, timeoutMs = 20000, minIntervalMs = 250, maxRetries = 5, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now() }) {
   const u = new URL(url);
   if (u.protocol !== "https:" || u.username || u.password) throw new Error("ODOO_URL must be https, with no password in it.");
   const origin = u.origin;
   const secrets = [apiKey];
+  /* One call at a time, with a gap, so a page of payments cannot burst
+     Odoo Online into HTTP 429. */
+  let chain = Promise.resolve();
+  let nextAt = 0;
+  function paced(fn) {
+    const run = chain.then(async () => {
+      const wait = nextAt - now();
+      if (minIntervalMs > 0 && wait > 0) await sleep(wait);
+      try { return await fn(); }
+      finally { if (minIntervalMs > 0) nextAt = now() + minIntervalMs; }
+    });
+    chain = run.then(() => {}, () => {});
+    return run;
+  }
 
   async function call(model, method, payload) {
     if (!/^[A-Za-z0-9_.]+$/.test(model) || !/^[A-Za-z0-9_]+$/.test(method)) throw new Error("Unexpected Odoo model or method.");
+    return paced(() => attempt(model, method, payload, 0));
+  }
+
+  async function attempt(model, method, payload, n) {
     let res;
     try {
       res = await fetchImpl(origin + "/json/2/" + model + "/" + method, {
@@ -57,6 +90,10 @@ export function createOdooClient({ url, database, apiKey, fetchImpl = globalThis
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch (_) { json = null; }
+    if (RETRY_STATUSES.has(res.status) && n < maxRetries) {
+      await sleep(retryWaitMs(n, res.headers.get("retry-after"), now()));
+      return attempt(model, method, payload, n + 1);
+    }
     if (!res.ok) {
       const why = (json && typeof json.message === "string" && json.message) || (json && json.name) || ("HTTP " + res.status);
       const err = new Error("Odoo refused " + model + "." + method + ": " + redact(why, secrets));

@@ -151,6 +151,8 @@ curl -sS --max-time 120 -X POST -H "X-Royal-Sync-Secret: PASTE_THE_RUN_SECRET" -
 
 Applied event ids, the latest record version, and the Odoo ids are stored in ROYAL's own database, the same store the boot screen calls DURABLE.
 
+Odoo Online will refuse a burst of calls with HTTP 429. I wait between calls, and I retry 429 and 503, following the Retry-After header when Odoo sends one. A payment that still fails is not acknowledged, and I keep the event and try it on the next pass even if the feed has nothing new. Acknowledging the failure is what made those payments disappear from later passes.
+
 ### Rotate the Odoo key
 
 1. In Odoo, make a new API key the same way as step 3. Do this before you delete the old one.

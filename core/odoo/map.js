@@ -148,19 +148,44 @@ async function searchPartners(odoo, domain) {
   });
 }
 
+function partnerCache(cache) {
+  if (!cache) return null;
+  if (!cache.partners) cache.partners = new Map();
+  return cache.partners;
+}
+function cachedPartner(bag, keys) {
+  if (!bag) return null;
+  for (const key of keys) {
+    if (key && bag.has(key)) return bag.get(key);
+  }
+  return null;
+}
+function rememberPartner(bag, keys, id) {
+  if (!bag || !id) return id;
+  for (const key of keys) if (key) bag.set(key, id);
+  return id;
+}
+
 /* Find a contact by the House client id (ref), then by email, then by phone.
-   Match an existing email before creating. Never unlink. */
-export async function findOrCreatePartner(odoo, data, { create = true, fillExisting = true } = {}) {
+   Match an existing email before creating. Never unlink. Lookups from one
+   pass are reused, so a page of payments for the same client does not search
+   res.partner again. */
+export async function findOrCreatePartner(odoo, data, { create = true, fillExisting = true, cache } = {}) {
   const clientId = text(data.client_id);
   const ourRef = clientId ? partnerRef(clientId) : "";
+  const email = emailOf(data.email);
+  const phone = text(data.phone);
+  const bag = partnerCache(cache);
+  const keys = [ourRef && "ref:" + ourRef, email && "email:" + email.toLowerCase(), phone && "phone:" + phone];
+  const hit = cachedPartner(bag, keys);
+  /* A payment or inquiry only needs the id. A client update must still write. */
+  if (hit && !fillExisting) return hit;
   let row = null;
   if (ourRef) {
     const byRef = await searchPartners(odoo, [["ref", "=", ourRef]]);
     row = pickPartner(byRef, ourRef);
   }
-  const email = emailOf(data.email);
   if (!row && email) row = pickPartner(await searchPartners(odoo, [["email", "=ilike", email]]), ourRef);
-  const phone = text(data.phone);
   if (!row && phone) row = pickPartner(await searchPartners(odoo, [["phone", "=ilike", phone]]), ourRef);
   const addr = splitAddress(data.address);
   const comment = clientId ? houseComment(clientId, data, addr.overflow) : "";
@@ -168,7 +193,7 @@ export async function findOrCreatePartner(odoo, data, { create = true, fillExist
   if (row) {
     if (!fillExisting) {
       if (ourRef && !text(row.ref)) await odoo.write("res.partner", [rowId(row)], { ref: ourRef }, ARCHIVED);
-      return rowId(row);
+      return rememberPartner(bag, keys, rowId(row));
     }
     const rank = Math.max(1, Number(row.customer_rank) || 0);
     const vals = defined({
@@ -183,7 +208,7 @@ export async function findOrCreatePartner(odoo, data, { create = true, fillExist
       ref: ourRef && (!text(row.ref) || text(row.ref) === ourRef) ? ourRef : undefined,
     });
     if (Object.keys(vals).length) await odoo.write("res.partner", [rowId(row)], vals, ARCHIVED);
-    return rowId(row);
+    return rememberPartner(bag, keys, rowId(row));
   }
   if (!create) return null;
   const id = await odoo.create("res.partner", defined({
@@ -198,7 +223,7 @@ export async function findOrCreatePartner(odoo, data, { create = true, fillExist
     active: data.archived === true ? false : true,
     is_company: false,
   }));
-  return id;
+  return rememberPartner(bag, keys, id);
 }
 
 function leadBucket(row) {
@@ -245,13 +270,13 @@ async function findLead(odoo, inquiryId, mappedId) {
   return (rows || []).find((r) => text(r.description).includes(inquiryMarker(inquiryId))) || null;
 }
 
-async function upsertLead(odoo, data, mappedId) {
+async function upsertLead(odoo, data, mappedId, cache) {
   const inquiryId = text(data.inquiry_id);
   if (!inquiryId) throw new Error("The inquiry has no inquiry_id.");
   const partnerId = await findOrCreatePartner(odoo, {
     client_id: data.client_id, name: text(data.customer_name) || explicitName(data),
     first_name: data.first_name, last_name: data.last_name, email: data.email, phone: data.phone,
-  }, { fillExisting: !text(data.client_id) });
+  }, { fillExisting: !text(data.client_id), cache });
   const vals = defined({
     name: leadTitle(data),
     partner_id: partnerId || undefined,
@@ -355,7 +380,7 @@ async function upsertMoney(odoo, cache, cfg, spec) {
   if (cents < 0) throw new Error("The amount is negative, so I did not record this payment.");
   const date = day(spec.date);
   const amount = cents / 100;
-  const partnerId = await findOrCreatePartner(odoo, spec.partner, { fillExisting: !text(spec.partner.client_id) });
+  const partnerId = await findOrCreatePartner(odoo, spec.partner, { fillExisting: !text(spec.partner.client_id), cache });
   if (!partnerId) throw new Error("I could not find or create the Odoo contact for this payment.");
   const journal = await resolveJournal(odoo, cache, cfg, spec.direction);
   const currency = await currencyId(odoo, cache, spec.currency);
@@ -415,11 +440,11 @@ export async function applyHouseEvent(event, { odoo, cache, cfg, mappedId } = {}
   const type = event.event_type;
   if (type === "client.created" || type === "client.updated") {
     if (!text(data.client_id)) throw new Error("The client has no client_id.");
-    const id = await findOrCreatePartner(odoo, data, { fillExisting: true });
+    const id = await findOrCreatePartner(odoo, data, { fillExisting: true, cache });
     return { model: "res.partner", odoo_id: id };
   }
   if (type === "inquiry.created" || type === "inquiry.updated") {
-    const id = await upsertLead(odoo, data, mappedId);
+    const id = await upsertLead(odoo, data, mappedId, cache);
     return { model: "crm.lead", odoo_id: id };
   }
   if (type === "payment.voided" || ((type === "payment.recorded" || type === "payment.updated") && data.status === "voided")) {
