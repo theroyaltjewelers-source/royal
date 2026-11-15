@@ -4,9 +4,13 @@
    unacknowledged.
    Applied event ids, record versions and Odoo ids live in ROYAL's own store
    (the same one /v1/boot reports as DURABLE when Postgres or the file store
-   is on). A failed event is not remembered, so the feed's retry is applied.
-   A skipped event (bridge.test, test flag, stale version) is remembered and
-   acked as delivered, so it is not served again and is not written to Odoo. */
+   is on). An event that fails while writing to Odoo is kept in odoo_retry
+   and is not acknowledged, so the next pass tries it again even when the
+   feed has nothing new. Acknowledging it as failed made the feed stop
+   offering it. A skipped event (bridge.test, test flag, stale version) is
+   remembered and acked as delivered, so it is not served again and is not
+   written to Odoo. A bad envelope (no id, unknown type) is acked as failed
+   because trying it again cannot succeed. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { chunkAck, createFeedClient, DEFAULT_FEED_BASE } from "./feed.js";
@@ -14,7 +18,7 @@ import { createOdooClient, redact } from "./client.js";
 import { planEvent, recordKey } from "./plan.js";
 import { applyHouseEvent } from "./map.js";
 
-export const ODOO_STORE = Object.freeze({ event: "odoo_event", map: "odoo_map", state: "odoo_sync", stateId: "state" });
+export const ODOO_STORE = Object.freeze({ event: "odoo_event", map: "odoo_map", state: "odoo_sync", stateId: "state", retry: "odoo_retry" });
 
 const EMPTY_COUNTS = { runs: 0, delivered: 0, failed: 0, skipped: 0, applied: 0 };
 
@@ -100,78 +104,120 @@ async function remember(store, event, reason, now) {
   }));
 }
 
+async function queueRetry(store, event, error, now) {
+  await casUpdate(store, ODOO_STORE.retry, storeId(event.event_id), (cur) => ({
+    status: "pending", event, error, attempts: ((cur && cur.attempts) || 0) + 1, at: now().toISOString(),
+  }));
+}
+
+async function finishRetry(store, eventId, now) {
+  if (!eventId) return;
+  const id = storeId(eventId);
+  const cur = await store.get(ODOO_STORE.retry, id);
+  if (!cur || !cur.data || cur.data.status === "done") return;
+  await casUpdate(store, ODOO_STORE.retry, id, () => ({ status: "done", at: now().toISOString() }));
+}
+
 /* Pull, apply, ack. `feed` and `apply` are injectable. Pages are acked
    before the next page is requested, inside the lease the feed keeps. */
 export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent, now = () => new Date(), limit = 50, maxPages = 200 }) {
   const cache = {};
   const totals = { delivered: 0, failed: 0, skipped: 0, applied: 0, errors: [] };
-  try {
-    return await passPages();
-  } catch (e) { e.syncTotals = totals; throw e; }
+  const handled = new Set();
 
-  async function passPages() {
-  let after = 0;
-  for (let page = 0; page < maxPages; page++) {
-    const body = await feed.getEvents(after, limit);
-    const events = Array.isArray(body.events) ? body.events : [];
-    const delivered = [];
-    const failed = [];
-    for (const event of events) {
-      const eventId = event && typeof event.event_id === "string" ? event.event_id : "";
-      try {
-        if (eventId) {
-          const seen = await store.get(ODOO_STORE.event, storeId(eventId));
-          if (seen) {
-            delivered.push(eventId);
-            totals.delivered++; totals.skipped++;
-            continue;
-          }
-        }
-        const key = recordKey(event);
-        let previous = null;
-        if (key) {
-          const row = await store.get(ODOO_STORE.map, storeId(key));
-          if (row && row.data && Number.isFinite(row.data.version)) previous = row.data.version;
-        }
-        const plan = planEvent(event, { previousVersion: previous, allowTest: cfg.allowTest });
-        if (plan.action === "fail") {
-          const error = redact(plan.error, cfg.secrets);
-          if (eventId) failed.push({ event_id: eventId, error });
-          totals.failed++; totals.errors.push({ at: now().toISOString(), event_id: eventId, event_type: event && event.event_type || "", error });
-          continue;
-        }
-        if (plan.action === "skip") {
-          await remember(store, event, plan.reason, now);
-          if (eventId) delivered.push(eventId);
-          totals.delivered++; totals.skipped++;
-          continue;
-        }
-        const mapped = await store.get(ODOO_STORE.map, storeId(plan.key));
-        const result = await apply(event, { odoo, cache, cfg, mappedId: mapped && mapped.data ? mapped.data.odoo_id : null });
-        await casUpdate(store, ODOO_STORE.map, storeId(plan.key), (cur) => ({
-          version: Math.max(plan.version, cur && Number.isFinite(cur.version) ? cur.version : 0),
-          model: result.model, odoo_id: result.odoo_id, at: now().toISOString(),
-        }));
-        await remember(store, event, "applied", now);
-        if (eventId) delivered.push(eventId);
-        totals.delivered++; totals.applied++;
-      } catch (e) {
-        const error = redact(e.message, cfg.secrets);
-        if (eventId) failed.push({ event_id: eventId, error });
-        totals.failed++; totals.errors.push({ at: now().toISOString(), event_id: eventId, event_type: event && event.event_type || "", error });
-      }
-    }
+  async function ackChunks(delivered, failed) {
     for (const chunk of chunkAck(delivered, failed)) {
       const ack = await feed.ack(chunk);
       if (!ack || ack.ok === false) throw new Error("The House feed did not accept the acknowledgement" + (ack && ack.error ? ": " + ack.error : "."));
     }
-    if (body.has_more !== true) return totals;
-    const next = Number(body.next_cursor);
-    if (!Number.isInteger(next) || next === after) throw new Error("The House feed said there is more, but did not move the cursor.");
-    after = next;
   }
-  throw new Error("The House feed kept paging past the safety limit.");
+
+  /* "delivered" is acked. "failed" is acked as failed (the envelope itself is
+     unusable). "hold" is kept locally and not acked, so it is tried again. */
+  async function applyOne(event) {
+    const eventId = event && typeof event.event_id === "string" ? event.event_id : "";
+    if (eventId && handled.has(eventId)) return { ack: "hold", eventId };
+    if (eventId) handled.add(eventId);
+    if (eventId) {
+      const seen = await store.get(ODOO_STORE.event, storeId(eventId));
+      if (seen) {
+        totals.delivered++; totals.skipped++;
+        await finishRetry(store, eventId, now);
+        return { ack: "delivered", eventId };
+      }
+    }
+    const key = recordKey(event);
+    let previous = null;
+    if (key) {
+      const row = await store.get(ODOO_STORE.map, storeId(key));
+      if (row && row.data && Number.isFinite(row.data.version)) previous = row.data.version;
+    }
+    const plan = planEvent(event, { previousVersion: previous, allowTest: cfg.allowTest });
+    if (plan.action === "fail") {
+      const error = redact(plan.error, cfg.secrets);
+      totals.failed++; totals.errors.push({ at: now().toISOString(), event_id: eventId, event_type: event && event.event_type || "", error });
+      return { ack: "failed", eventId, error };
+    }
+    if (plan.action === "skip") {
+      await remember(store, event, plan.reason, now);
+      await finishRetry(store, event.event_id, now);
+      totals.delivered++; totals.skipped++;
+      return { ack: "delivered", eventId };
+    }
+    try {
+      const mapped = await store.get(ODOO_STORE.map, storeId(plan.key));
+      const result = await apply(event, { odoo, cache, cfg, mappedId: mapped && mapped.data ? mapped.data.odoo_id : null });
+      await casUpdate(store, ODOO_STORE.map, storeId(plan.key), (cur) => ({
+        version: Math.max(plan.version, cur && Number.isFinite(cur.version) ? cur.version : 0),
+        model: result.model, odoo_id: result.odoo_id, at: now().toISOString(),
+      }));
+      await remember(store, event, "applied", now);
+      await finishRetry(store, event.event_id, now);
+      totals.delivered++; totals.applied++;
+      return { ack: "delivered", eventId };
+    } catch (e) {
+      const error = redact(e.message, cfg.secrets);
+      if (eventId) await queueRetry(store, event, error, now);
+      totals.failed++; totals.errors.push({ at: now().toISOString(), event_id: eventId, event_type: event && event.event_type || "", error });
+      return { ack: "hold", eventId, error };
+    }
   }
+
+  async function passPages() {
+    let rows = [];
+    try { rows = await store.list(ODOO_STORE.retry); } catch (_) { rows = []; }
+    const held = [];
+    for (const row of rows) {
+      if (!row.data || row.data.status !== "pending" || !row.data.event) continue;
+      const outcome = await applyOne(row.data.event);
+      if (outcome.ack === "delivered" && outcome.eventId) held.push(outcome.eventId);
+    }
+    if (held.length) await ackChunks(held, []);
+
+    let after = 0;
+    for (let page = 0; page < maxPages; page++) {
+      const body = await feed.getEvents(after, limit);
+      const events = Array.isArray(body.events) ? body.events : [];
+      const delivered = [];
+      const failed = [];
+      for (const event of events) {
+        const outcome = await applyOne(event);
+        if (!outcome.eventId || outcome.ack === "hold") continue;
+        if (outcome.ack === "failed") failed.push({ event_id: outcome.eventId, error: outcome.error });
+        else delivered.push(outcome.eventId);
+      }
+      if (delivered.length || failed.length) await ackChunks(delivered, failed);
+      if (body.has_more !== true) return totals;
+      const next = Number(body.next_cursor);
+      if (!Number.isInteger(next) || next === after) throw new Error("The House feed said there is more, but did not move the cursor.");
+      after = next;
+    }
+    throw new Error("The House feed kept paging past the safety limit.");
+  }
+
+  try {
+    return await passPages();
+  } catch (e) { e.syncTotals = totals; throw e; }
 }
 
 export function createSync({ store, cfg, feed, odoo, now = () => new Date(), log = () => {}, apply } = {}) {

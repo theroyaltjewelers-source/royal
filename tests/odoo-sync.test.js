@@ -7,7 +7,7 @@ import { createHandler } from "../server/handler.js";
 import {
   EMPTY_BODY_SHA256, canonicalString, chunkAck, contentSha256, createFeedClient, feedHeaders, signFeed,
 } from "../core/odoo/feed.js";
-import { createOdooClient } from "../core/odoo/client.js";
+import { createOdooClient, retryWaitMs } from "../core/odoo/client.js";
 import { planEvent, recordKey } from "../core/odoo/plan.js";
 import { applyHouseEvent, inquiryMarker, leadTitle, memoHasTag, partnerRef, taggedMemo } from "../core/odoo/map.js";
 import { ODOO_STORE, createSync, odooSyncFromEnv, readOdooConfig, runPass, storeId } from "../core/odoo/sync.js";
@@ -198,6 +198,36 @@ test("the feed client signs the query it sends and acks with the raw body", asyn
   assert.equal(chunkAck(["a", "b"], [{ event_id: "c", error: "e" }], 1).length, 2);
 });
 
+test("a 429 is retried after Retry-After, and a 503 backs off", async () => {
+  assert.equal(retryWaitMs(0, "3", 0), 3000);
+  assert.equal(retryWaitMs(0, null, 0), 1000);
+  assert.equal(retryWaitMs(2, null, 0), 4000);
+  const waits = [];
+  let hits = 0;
+  const fetchImpl = async () => {
+    hits++;
+    if (hits === 1) return new Response("{}", { status: 429, headers: { "retry-after": "3" } });
+    if (hits === 2) return new Response("{}", { status: 503 });
+    return new Response(JSON.stringify([{ id: 1, name: "USD" }]), { status: 200 });
+  };
+  const odoo = createOdooClient({
+    url: "https://the-house.example", database: "db", apiKey: "odoo-api-key-value-xxxx", fetchImpl,
+    minIntervalMs: 0, sleep: async (ms) => { waits.push(ms); }, now: () => 1_000_000,
+  });
+  const rows = await odoo.searchRead("res.currency", { domain: [["name", "=", "USD"]], fields: ["name"], limit: 1 });
+  assert.equal(rows[0].id, 1);
+  assert.equal(hits, 3);
+  assert.deepEqual(waits, [3000, 2000]);
+  let again = 0;
+  const failing = createOdooClient({
+    url: "https://the-house.example", database: "db", apiKey: "odoo-api-key-value-xxxx",
+    fetchImpl: async () => { again++; return new Response("{}", { status: 429, headers: { "retry-after": "0" } }); },
+    minIntervalMs: 0, maxRetries: 2, sleep: async () => {},
+  });
+  await assert.rejects(() => failing.searchRead("res.partner", { domain: [], fields: ["id"], limit: 1 }), /HTTP 429/);
+  assert.equal(again, 3, "the first try plus two retries");
+});
+
 test("Odoo JSON-2 calls use bearer, the database header, and named arguments", async () => {
   const apiKey = "odoo-api-key-value-xxxx";
   const seen = [];
@@ -208,7 +238,7 @@ test("Odoo JSON-2 calls use bearer, the database header, and named arguments", a
     if (seen.length >= 4) return new Response(JSON.stringify({ name: "ValidationError", message: "bad " + apiKey, debug: "TRACE secret " + apiKey }), { status: 422 });
     return new Response("true", { status: 200 });
   };
-  const odoo = createOdooClient({ url: "https://the-house.example/odoo", database: "the-house-of-royal-t-design1", apiKey, fetchImpl });
+  const odoo = createOdooClient({ url: "https://the-house.example/odoo", database: "the-house-of-royal-t-design1", apiKey, fetchImpl, minIntervalMs: 0 });
   const rows = await odoo.searchRead("res.partner", { domain: [["email", "=ilike", "a@b.c"]], fields: ["name"], limit: 1, context: { active_test: false } });
   assert.equal(rows[0].id, 5);
   assert.equal(seen[0].url, "https://the-house.example/json/2/res.partner/search_read");
@@ -300,10 +330,14 @@ test("dedup, versions and the test flag", async () => {
   const boom = envelope("client.created", env({ client_id: "rec_new", email: "new@example.com", name: "New", phone: "+1 555 3333" }), { event_id: "evt_boom" });
   r = await pass([boom]);
   assert.equal(r.totals.failed, 1);
-  assert.equal(r.feed.acks[0].failed[0].event_id, "evt_boom");
-  assert.match(r.feed.acks[0].failed[0].error, /down/);
-  r = await pass([boom]);
-  assert.equal(r.totals.applied, 1, "a failed event is retried because it was not remembered");
+  assert.equal(r.feed.acks.every((a) => (a.failed || []).length === 0), true, "a write failure is not acked, or the feed will not offer it again");
+  const queued = await store.get(ODOO_STORE.retry, "evt_boom");
+  assert.equal(queued.data.status, "pending");
+  assert.equal(queued.data.event.event_id, "evt_boom");
+  r = await pass([]);
+  assert.equal(r.totals.applied, 1, "the saved event is retried on the next pass even when the feed is empty");
+  assert.deepEqual(r.feed.acks[0].delivered, ["evt_boom"]);
+  assert.equal((await store.get(ODOO_STORE.retry, "evt_boom")).data.status, "done");
 });
 
 test("clients, inquiries and payments map onto Odoo", async () => {
@@ -411,6 +445,22 @@ test("clients, inquiries and payments map onto Odoo", async () => {
   assert.match(refundRow.memo, /refund of RT:rec_pay/);
   assert.equal(refundRow.payment_method_line_id, 4);
   assert.equal(refundRow.state, "in_process");
+});
+
+test("currency, journal and partner lookups are reused within a pass", async () => {
+  const odoo = fakeOdoo();
+  const cache = {};
+  const cfg = { journalId: null };
+  const reads = (model) => odoo.calls.filter((c) => c.op === "search_read" && c.model === model).length;
+  await applyHouseEvent(envelope("payment.recorded", payment()), { odoo, cache, cfg });
+  const partners = reads("res.partner");
+  const journals = reads("account.journal");
+  const currencies = reads("res.currency");
+  assert.ok(partners >= 1 && journals === 1 && currencies === 1);
+  await applyHouseEvent(envelope("payment.recorded", payment({ payment_id: "rec_pay2", amount: "10.00" }), { event_id: "evt_pay2" }), { odoo, cache, cfg });
+  assert.equal(reads("res.partner"), partners);
+  assert.equal(reads("account.journal"), journals);
+  assert.equal(reads("res.currency"), currencies);
 });
 
 test("a pass persists event ids and Odoo ids, and redacts secrets", async () => {
