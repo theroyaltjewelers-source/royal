@@ -17,6 +17,7 @@ import { chunkAck, createFeedClient, DEFAULT_FEED_BASE } from "./feed.js";
 import { createOdooClient, redact } from "./client.js";
 import { planEvent, recordKey } from "./plan.js";
 import { applyHouseEvent } from "./map.js";
+import { noteForwardWrite, runReverse } from "./reverse.js";
 
 export const ODOO_STORE = Object.freeze({ event: "odoo_event", map: "odoo_map", state: "odoo_sync", stateId: "state", retry: "odoo_retry" });
 
@@ -63,7 +64,7 @@ function checkHttps(value, name, issues) {
    nothing. Reasons name variables, never values. */
 export function readOdooConfig(env) {
   const allowTest = env.ODOO_SYNC_ALLOW_TEST === "true";
-  const blank = { enabled: false, allowTest, journalId: null, runSecret: "", secrets: [] };
+  const blank = { enabled: false, allowTest, journalId: null, runSecret: "", secrets: [], reverseEnabled: false, reverseDryRun: false };
   if (env.ODOO_SYNC_ENABLED !== "true") {
     return { ...blank, reason: "ODOO_SYNC_ENABLED is not true, so I am not syncing to Odoo." };
   }
@@ -95,6 +96,8 @@ export function readOdooConfig(env) {
   return {
     enabled: true, allowTest, reason: "", odooUrl, db, apiKey, feedBase, keyId, feedSecret, journalId, runSecret,
     secrets: [apiKey, feedSecret, runSecret].filter((s) => s && s.length >= 8),
+    reverseEnabled: env.ODOO_REVERSE_SYNC_ENABLED === "true",
+    reverseDryRun: env.ODOO_REVERSE_SYNC_DRY_RUN === "true",
   };
 }
 
@@ -172,6 +175,7 @@ export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent,
         model: result.model, odoo_id: result.odoo_id, at: now().toISOString(),
       }));
       await remember(store, event, "applied", now);
+      await noteForwardWrite(store, event, result.odoo_id, now);
       await finishRetry(store, event.event_id, now);
       totals.delivered++; totals.applied++;
       return { ack: "delivered", eventId };
@@ -194,6 +198,22 @@ export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent,
     }
     if (held.length) await ackChunks(held, []);
 
+    await pullFeed();
+    if (cfg.reverseEnabled) {
+      try {
+        totals.reverse = await runReverse({
+          odoo, post: (body) => feed.changes(body), store, dryRun: !!cfg.reverseDryRun, now, log,
+          onConflict: async () => { await pullFeed(); },
+        });
+      } catch (e) {
+        const message = redact(e.message, cfg.secrets);
+        totals.reverse = { ok: false, dry_run: !!cfg.reverseDryRun, sent: 0, failed: 1, held: 0, skipped: 0, errors: [{ at: now().toISOString(), error: message }], preview: [] };
+        log("ROYAL: reverse sync did not finish. " + message);
+      }
+    }
+    return totals;
+
+    async function pullFeed() {
     let after = 0;
     for (let page = 0; page < maxPages; page++) {
       const body = await feed.getEvents(after, limit);
@@ -207,12 +227,13 @@ export async function runPass({ feed, store, cfg, odoo, apply = applyHouseEvent,
         else delivered.push(outcome.eventId);
       }
       if (delivered.length || failed.length) await ackChunks(delivered, failed);
-      if (body.has_more !== true) return totals;
+      if (body.has_more !== true) return;
       const next = Number(body.next_cursor);
       if (!Number.isInteger(next) || next === after) throw new Error("The House feed said there is more, but did not move the cursor.");
       after = next;
     }
     throw new Error("The House feed kept paging past the safety limit.");
+    }
   }
 
   try {
@@ -239,6 +260,7 @@ export function createSync({ store, cfg, feed, odoo, now = () => new Date(), log
         counts, last_errors,
         last_run: { at: now().toISOString(), ok: patch.ok, delivered: patch.totals.delivered, failed: patch.totals.failed,
           skipped: patch.totals.skipped, applied: patch.totals.applied, error: patch.error || null },
+        reverse: patch.totals.reverse || (prev && prev.reverse) || null,
       };
     });
   }
@@ -279,6 +301,10 @@ export function createSync({ store, cfg, feed, odoo, now = () => new Date(), log
       last_run: data.last_run || null,
       counts: { ...EMPTY_COUNTS, ...(data.counts || {}) },
       last_errors: Array.isArray(data.last_errors) ? data.last_errors : [],
+      reverse: {
+        enabled: !!config.reverseEnabled, dry_run: !!config.reverseDryRun,
+        ...(data.reverse || { sent: 0, skipped: 0, failed: 0, held: 0, preview: [], errors: [] }),
+      },
     };
   }
 

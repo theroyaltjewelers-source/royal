@@ -27,6 +27,9 @@ export function planEvent(event, { previousVersion = null, allowTest = false } =
     return { action: "fail", error: "The event has no event_id." };
   }
   if (event.event_type === "bridge.test") return { action: "skip", reason: "bridge.test" };
+  /* A change we pushed comes back as a feed event. Writing it again would
+     loop. The tag is origin "odoo" on the envelope or inside data. */
+  if (event.origin === "odoo" || (event.data && event.data.origin === "odoo")) return { action: "skip", reason: "origin-odoo" };
   const isTest = event.test === true || !!(event.data && event.data.test === true);
   if (isTest && !allowTest) return { action: "skip", reason: "test" };
   const key = recordKey(event);

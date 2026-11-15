@@ -53,3 +53,5 @@
 | `REPAINT_FEED_SECRET` | with the sync | feed HMAC secret (32 to 128 characters) | no | none | sync stays off; never logged |
 | `ODOO_SYNC_ALLOW_TEST` | no | write test-flagged events to Odoo | no | false | test events are acknowledged and not written; `bridge.test` is never written |
 | `ODOO_SYNC_RUN_SECRET` | for the scheduler | `X-Royal-Sync-Secret` on `/v1/odoo-sync/run` and `/status` | no | owner sign-in only | a scheduler cannot wake the sync; the owner still can |
+| `ODOO_REVERSE_SYNC_ENABLED` | no | Odoo edits back to the House | no | not `true` | nothing is posted to `/changes` |
+| `ODOO_REVERSE_SYNC_DRY_RUN` | no | log the reverse changes and do not post | no | false | with the reverse switch on, changes are posted |
