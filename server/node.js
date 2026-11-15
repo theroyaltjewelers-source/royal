@@ -13,6 +13,7 @@ import { storeFromEnv } from "./store-env.js";
 import { nodeAdapter } from "./node-adapter.js";
 import { intelligenceFromEnv } from "./intelligence-env.js";
 import { paymentsFromEnv } from "./shopify-payments.js";
+import { odooSyncFromEnv, startOdooSync } from "../core/odoo/sync.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB = join(ROOT, "web");
@@ -51,7 +52,11 @@ const { royal, auth, allowedOrigins, passcode } = await fromEnv(env, {
    bodies, queries or tokens), so every 4xx and 5xx can be traced in the
    Render log.  ROYAL_ACCESS_LOG=off silences it. */
 const log = env.ROYAL_ACCESS_LOG === "off" ? null : (l) => console.log("ROYAL_ACCESS " + JSON.stringify(l));
-const handler = createHandler({ royal, auth, passcode, bridge, allowedOrigins, staticFiles, log });
+/* Odoo sync stays off unless ODOO_SYNC_ENABLED=true and the feed and Odoo
+   values are set. The timer polls while this process is awake; a sleeping
+   Render service is woken by POST /v1/odoo-sync/run. */
+const odooSync = odooSyncFromEnv(env, { store, log: (line) => console.log(line) });
+const handler = createHandler({ royal, auth, passcode, bridge, odooSync, allowedOrigins, staticFiles, log });
 
 const payments = await paymentsFromEnv(env);
 const server = http.createServer(nodeAdapter(async request => (await payments.handle(request)) || handler(request)));
@@ -62,5 +67,8 @@ server.requestTimeout = 60000;
 server.headersTimeout = 65000;
 server.keepAliveTimeout = 65000;
 const port = Number(env.PORT || 8787);
-server.listen(port, () => console.log("ROYAL listening on http://localhost:" + port));
+server.listen(port, () => {
+  console.log("ROYAL listening on http://localhost:" + port);
+  startOdooSync(odooSync);
+});
 

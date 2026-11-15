@@ -43,3 +43,13 @@
 | `RESEND_API_KEY`, `ROYAL_EMAIL_FROM` | no | sending email | unknown | none | sending NOT CONFIGURED; an approved send says a person must send it |
 | `ROYAL_URL`, `ROYAL_TOKEN`, `ROYAL_BENCH_RUNS` | scripts only | `npm run bench`, `npm run phase1:verify` | not a server setting | none | the scripts' live checks do not run |
 | `TEST_DATABASE_URL` | tests only | Postgres tests | not a server setting | none | Postgres tests skip; the durability gate fails |
+| `ODOO_SYNC_ENABLED` | no | House to Odoo sync | no | not `true` | the worker does not poll, and `/v1/odoo-sync/run` does nothing |
+| `ODOO_URL` | with the sync | Odoo site, https | no | none | sync stays off |
+| `ODOO_DB` | with the sync | Odoo database name (`X-Odoo-Database`) | no | none | sync stays off |
+| `ODOO_API_KEY` | with the sync | Odoo JSON-2 bearer key (max life three months) | no | none | sync stays off; never logged |
+| `ODOO_PAYMENT_JOURNAL_ID` | no | bank journal for payments | no | first bank journal, else cash | that id is used; a bad id keeps the sync off |
+| `REPAINT_FEED_BASE_URL` | no | House event feed | no | `https://thehouseofroyaltdesign.com/api/odoo-bridge/v1` | the default feed |
+| `REPAINT_FEED_KEY_ID` | with the sync | feed key id (1 to 40 of `A-Za-z0-9._-`) | no | none | sync stays off |
+| `REPAINT_FEED_SECRET` | with the sync | feed HMAC secret (32 to 128 characters) | no | none | sync stays off; never logged |
+| `ODOO_SYNC_ALLOW_TEST` | no | write test-flagged events to Odoo | no | false | test events are acknowledged and not written; `bridge.test` is never written |
+| `ODOO_SYNC_RUN_SECRET` | for the scheduler | `X-Royal-Sync-Secret` on `/v1/odoo-sync/run` and `/status` | no | owner sign-in only | a scheduler cannot wake the sync; the owner still can |

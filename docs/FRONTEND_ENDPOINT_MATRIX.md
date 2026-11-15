@@ -36,6 +36,8 @@
 | Grok Bot (its token) | GET | `/v1/bots/:id/requests/:uuid` | `bridge.getRequest` | the bot's own token | 200 | 403, 404 | grokbot.test.js |
 | Render, uptime probes | GET, HEAD | `/v1/health` | inline | none | 200 | none | phase1.test.js |
 | Browser, iOS home screen | GET, HEAD | `/`, `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png`, `/favicon.ico`, `/robots.txt` | `staticFiles` | none | 200 | 404 for anything else | phase1.test.js |
+| Scheduler or owner | GET | `/v1/odoo-sync/status` | Odoo sync status | owner session, or `X-Royal-Sync-Secret` | 200 | 401, 403 (member), 405 | odoo-sync.test.js |
+| Scheduler or owner | POST | `/v1/odoo-sync/run` | one House to Odoo pass | owner session, or `X-Royal-Sync-Secret` | 200 (502 if the pass itself fails) | 401, 403, 405 | odoo-sync.test.js |
 
 ## Known causes of 404, 405 and 400 in production
 

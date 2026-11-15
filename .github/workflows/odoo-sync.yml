@@ -1,0 +1,38 @@
+# Wakes ROYAL once an hour and runs one House-to-Odoo pass.
+# Render sleeps when idle, which stops the in-process poller.
+# The job skips the call until ROYAL_ODOO_SYNC_URL and ROYAL_ODOO_SYNC_SECRET
+# are set under Settings, Secrets and variables, Actions.
+# Once an hour stays inside GitHub's free private-repo minutes.
+# For every 5 minutes, change the cron below to "*/5 * * * *".
+# See README, "Sync the House to Odoo".
+
+name: Odoo sync
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one Odoo sync pass
+        env:
+          URL: ${{ secrets.ROYAL_ODOO_SYNC_URL }}
+          SECRET: ${{ secrets.ROYAL_ODOO_SYNC_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${URL}" ] || [ -z "${SECRET}" ]; then
+            echo "ROYAL_ODOO_SYNC_URL or ROYAL_ODOO_SYNC_SECRET is not set. Skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 120 \
+            -X POST \
+            -H "X-Royal-Sync-Secret: ${SECRET}" \
+            -H "Content-Type: application/json" \
+            --data '{}' \
+            "${URL}"
+          echo

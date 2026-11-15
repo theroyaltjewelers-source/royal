@@ -25,6 +25,7 @@ const ROUTES = [
   [/^\/v1\/decisions\/[A-Za-z0-9_]+\/resolve$/, "POST"], [/^\/v1\/integrations\/grokbot\/result\/[0-9a-fA-F-]{36}$/, "GET"],
   [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/token$/, "POST, DELETE"], [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(message|verify|events)$/, "POST"],
   [/^\/v1\/bots\/[a-z][a-z0-9_]{0,31}\/(feed|stream|requests\/[0-9a-fA-F-]{36})$/, "GET"],
+  [/^\/v1\/odoo-sync\/status$/, "GET"], [/^\/v1\/odoo-sync\/run$/, "POST"],
 ];
 export function allowedMethods(path) { const r = ROUTES.find(([re]) => re.test(path)); return r ? r[1] : null; }
 
@@ -42,7 +43,7 @@ export function routeOf(path) {
   return path.replace(/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}/g, ":uuid").replace(/^\/v1\/decisions\/[^/]+/, "/v1/decisions/:id").replace(/^\/v1\/bots\/[^/]+/, (m) => (m === "/v1/bots" ? m : "/v1/bots/:bot"));
 }
 
-export function createHandler({ royal, auth, passcode = null, bridge = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 }, log = null }) {
+export function createHandler({ royal, auth, passcode = null, bridge = null, odooSync = null, allowedOrigins = [], staticFiles = null, rateLimit = { perMinute: 120 }, log = null }) {
   if (!royal) throw new Error("HANDLER_CONFIG: royal is required");
   if (!auth) throw new Error("HANDLER_CONFIG: auth is required");
   const hits = new Map();
@@ -183,6 +184,14 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
   handle.routeOf = routeOf;
   return handle;
 
+  /* Status is read-only. Run performs one pull, mirror and ack. Both answer
+     the owner and, separately, a scheduler that presented the run secret. */
+  async function odooHttp(req) {
+    if (req.method === "GET") return json(req, 200, await odooSync.status());
+    const r = await odooSync.run();
+    return json(req, r && r.ok === false ? 502 : 200, r);
+  }
+
   async function route(req) {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -214,6 +223,16 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       return json(req, 200, { ok: true, token: r.token, expires_at: r.expires_at });
     }
     if (path === "/v1/login-methods" && req.method === "GET") return json(req, 200, { ok: true, passcode: !!(passcode && passcode.configured) });
+
+    /* Odoo sync can also be woken by a scheduler that has the run secret
+       and no owner session. The secret is a header, never a query, and it
+       is not logged. A wrong secret falls through to ordinary sign-in. */
+    if (odooSync && odooSync.secretOk(req.headers.get("x-royal-sync-secret")) &&
+        ((path === "/v1/odoo-sync/status" && req.method === "GET") || (path === "/v1/odoo-sync/run" && req.method === "POST"))) {
+      if (limited("odoosync:" + clientAddress(req))) return fail(req, 429, "RATE_LIMITED", "Too many requests. Wait a minute.");
+      try { return await odooHttp(req); }
+      catch (e) { return fail(req, 500, "SERVER_ERROR", "I hit an internal error. Nothing was changed."); }
+    }
 
     /* ------------------------------------------------------------ auth --- */
     const h = req.headers.get("authorization") || "";
@@ -382,6 +401,10 @@ export function createHandler({ royal, auth, passcode = null, bridge = null, all
       if (path === "/v1/bots" || path.startsWith("/v1/bots/") || path === "/v1/feed/stream" || path.startsWith("/v1/integrations/grokbot/")) {
         const r = await ownerBotRoutes(req, url, path, user);
         if (r) return r;
+      }
+      if (path === "/v1/odoo-sync/status" || path === "/v1/odoo-sync/run") {
+        if (!odooSync) return fail(req, 404, "NOT_FOUND", "No such route.");
+        return await odooHttp(req);
       }
       const m = /^\/v1\/decisions\/([A-Za-z0-9_]+)\/resolve$/.exec(path);
       if (req.method === "POST" && m) {
